@@ -29,8 +29,11 @@ cargo install just
 # Optional: install nextest for the `just test` helper
 cargo install --locked cargo-nextest
 
-# Build Codex.
+# Build Codex (the default workspace member).
 cargo build
+
+# If you need to prebuild the full Rust workspace, opt in explicitly.
+cargo build --workspace
 
 # Launch the TUI with a sample prompt.
 cargo run --bin codex -- "explain this codebase to me"
@@ -43,6 +46,8 @@ just fix -p <crate-you-touched>
 cargo test -p codex-tui
 # If you have cargo-nextest installed, `just test` runs the test suite via nextest:
 just test
+# Without nextest, opt into the full workspace explicitly:
+cargo test --workspace
 # Avoid `--all-features` for routine local runs because it increases build
 # time and `target/` disk usage by compiling additional feature combinations.
 # If you specifically want full feature coverage, use:

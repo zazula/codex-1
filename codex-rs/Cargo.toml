@@ -108,6 +108,7 @@ members = [
     "plugin",
     "model-provider",
 ]
+default-members = ["cli"]
 resolver = "2"
 
 [workspace.package]
@@ -470,9 +471,7 @@ ignored = [
 ]
 
 [profile.dev]
-# Keep line tables/backtraces while avoiding expensive full variable debug info
-# across local dev builds.
-debug = 1
+debug = 0 # Speed up routine local builds by skipping debug symbols.
 
 [profile.dev-small]
 inherits = "dev"
@@ -480,15 +479,18 @@ opt-level = 0
 debug = 0
 strip = true
 
+[profile.test]
+debug = 0 # Speed up routine local test builds by skipping debug symbols.
+
 [profile.release]
-lto = "fat"
+# Keep `release` fast enough for local iteration and CI while still producing
+# optimized binaries.
+lto = "thin"
 split-debuginfo = "off"
 # Because we bundle some of these executables with the TypeScript CLI, we
 # remove everything to make the binary as small as possible.
 strip = "symbols"
-
-# See https://github.com/openai/codex/issues/1411 for details.
-codegen-units = 1
+codegen-units = 16
 
 [profile.ci-test]
 debug = 1         # Reduce debug symbol size
