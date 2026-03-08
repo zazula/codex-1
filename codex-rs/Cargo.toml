@@ -89,6 +89,7 @@ members = [
     "codex-experimental-api-macros",
     "plugin",
 ]
+default-members = ["cli"]
 resolver = "2"
 
 [workspace.package]
@@ -409,15 +410,21 @@ ignored = [
     "codex-v8-poc",
 ]
 
+[profile.dev]
+debug = 0 # Speed up routine local builds by skipping debug symbols.
+
+[profile.test]
+debug = 0 # Speed up routine local test builds by skipping debug symbols.
+
 [profile.release]
-lto = "fat"
+# Keep `release` fast enough for local iteration and CI while still producing
+# optimized binaries.
+lto = "thin"
 split-debuginfo = "off"
 # Because we bundle some of these executables with the TypeScript CLI, we
 # remove everything to make the binary as small as possible.
 strip = "symbols"
-
-# See https://github.com/openai/codex/issues/1411 for details.
-codegen-units = 1
+codegen-units = 16
 
 [profile.ci-test]
 debug = 1         # Reduce debug symbol size
