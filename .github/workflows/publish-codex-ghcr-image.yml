@@ -34,15 +34,8 @@ jobs:
             bash -lc '
               set -euo pipefail
               export PATH=/usr/local/cargo/bin:$PATH
-              # Keep peak memory bounded on GitHub-hosted runners.
-              export CARGO_BUILD_JOBS=2
-              export CARGO_INCREMENTAL=0
-              export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
-              export CARGO_PROFILE_RELEASE_DEBUG=0
-              export CARGO_PROFILE_RELEASE_LTO=off
               apt-get update
               apt-get install -y --no-install-recommends pkg-config libcap-dev
-              echo "build-env: jobs=${CARGO_BUILD_JOBS} codegen_units=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS} debug=${CARGO_PROFILE_RELEASE_DEBUG} lto=${CARGO_PROFILE_RELEASE_LTO}"
               cargo build --manifest-path codex-rs/Cargo.toml -p codex-cli --release
             '
 
