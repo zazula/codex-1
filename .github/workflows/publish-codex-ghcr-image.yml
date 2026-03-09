@@ -25,23 +25,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
-
-      - name: Install native build dependencies
+      - name: Build codex binary (bookworm toolchain container)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends pkg-config libcap-dev musl-tools
-
-      - name: Build codex binary
-        run: cargo build --manifest-path codex-rs/Cargo.toml -p codex-cli --release --target x86_64-unknown-linux-musl
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/work" \
+            -w /work \
+            rust:1-bookworm \
+            bash -lc '
+              set -euo pipefail
+              apt-get update
+              apt-get install -y --no-install-recommends pkg-config libcap-dev
+              cargo build --manifest-path codex-rs/Cargo.toml -p codex-cli --release
+            '
 
       - name: Stage Docker build artifacts
         run: |
           mkdir -p codex-cli/dist
-          cp codex-rs/target/x86_64-unknown-linux-musl/release/codex codex-cli/dist/codex
+          cp codex-rs/target/release/codex codex-cli/dist/codex
           chmod +x codex-cli/dist/codex
 
       - name: Set up Docker Buildx
