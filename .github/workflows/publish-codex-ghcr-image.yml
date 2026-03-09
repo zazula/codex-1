@@ -28,11 +28,6 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install native build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends pkg-config libcap-dev
-
       - name: Build codex binary
         run: cargo build --manifest-path codex-rs/Cargo.toml -p codex-cli --release
 

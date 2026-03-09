@@ -1,0 +1,42 @@
+FROM node:24-slim
+
+ARG TZ
+ENV TZ="$TZ"
+
+# Match the runtime tooling expected by workspace agents while keeping
+# Codex itself sourced from this repository's Rust binary build.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  aggregate \
+  ca-certificates \
+  curl \
+  dnsutils \
+  fzf \
+  gh \
+  git \
+  gnupg2 \
+  iproute2 \
+  ipset \
+  iptables \
+  jq \
+  less \
+  man-db \
+  procps \
+  unzip \
+  ripgrep \
+  zsh \
+  && rm -rf /var/lib/apt/lists/*
+
+# Install the Codex CLI binary produced by the workflow.
+COPY dist/codex /usr/local/bin/codex
+RUN chmod 0555 /usr/local/bin/codex
+
+# Inside the container we consider the environment already sufficiently locked
+# down, therefore instruct Codex CLI to allow running without sandboxing.
+ENV CODEX_UNSAFE_ALLOW_NO_SANDBOX=1
+
+# Copy and set up firewall script as root.
+COPY scripts/init_firewall.sh /usr/local/bin/
+RUN chmod 500 /usr/local/bin/init_firewall.sh
+
+# Use the unprivileged node user by default.
+USER node
