@@ -33,6 +33,7 @@ jobs:
             rust:1-bookworm \
             bash -lc '
               set -euo pipefail
+              export PATH=/usr/local/cargo/bin:$PATH
               apt-get update
               apt-get install -y --no-install-recommends pkg-config libcap-dev
               cargo build --manifest-path codex-rs/Cargo.toml -p codex-cli --release
