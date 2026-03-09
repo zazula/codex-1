@@ -25,11 +25,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build codex binary
-        run: cargo build --manifest-path codex-rs/Cargo.toml -p codex-cli --release
+      - name: Build codex binary (bookworm toolchain container)
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/work" \
+            -w /work \
+            rust:1-bookworm \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/usr/local/cargo/bin:$PATH
+              # Keep peak memory bounded on GitHub-hosted runners.
+              export CARGO_BUILD_JOBS=2
+              export CARGO_INCREMENTAL=0
+              export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+              export CARGO_PROFILE_RELEASE_DEBUG=0
+              export CARGO_PROFILE_RELEASE_LTO=off
+              apt-get update
+              apt-get install -y --no-install-recommends pkg-config libcap-dev
+              echo "build-env: jobs=${CARGO_BUILD_JOBS} codegen_units=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS} debug=${CARGO_PROFILE_RELEASE_DEBUG} lto=${CARGO_PROFILE_RELEASE_LTO}"
+              cargo build --manifest-path codex-rs/Cargo.toml -p codex-cli --release
+            '
 
       - name: Stage Docker build artifacts
         run: |
@@ -45,7 +60,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Docker metadata
         id: meta
