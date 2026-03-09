@@ -25,19 +25,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build codex binary (bookworm toolchain container)
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native build dependencies
         run: |
-          docker run --rm \
-            -v "${GITHUB_WORKSPACE}:/work" \
-            -w /work \
-            rust:1-bookworm \
-            bash -lc '
-              set -euo pipefail
-              export PATH=/usr/local/cargo/bin:$PATH
-              apt-get update
-              apt-get install -y --no-install-recommends pkg-config libcap-dev
-              cargo build --manifest-path codex-rs/Cargo.toml -p codex-cli --release
-            '
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libcap-dev
+
+      - name: Build codex binary
+        run: cargo build --manifest-path codex-rs/Cargo.toml -p codex-cli --release
 
       - name: Stage Docker build artifacts
         run: |
@@ -53,7 +50,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Docker metadata
         id: meta
