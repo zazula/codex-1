@@ -1928,6 +1928,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-app-server-bridge"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "codex-app-server-protocol",
+ "futures",
+ "pretty_assertions",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "codex-app-server-client"
 version = "0.0.0"
 dependencies = [

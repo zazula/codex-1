@@ -10,6 +10,7 @@ members = [
     "app-server",
     "app-server-transport",
     "app-server-client",
+    "app-server-bridge",
     "app-server-protocol",
     "app-server-test-client",
     "debug-client",
