@@ -40,6 +40,11 @@ pub use protocol::v1::SandboxSettings;
 pub use protocol::v1::Tools;
 pub use protocol::v1::UserSavedConfig;
 pub use protocol::v2::*;
+/// Re-export v2 types under a `v2` module for scoped imports.
+pub mod v2 {
+    pub use crate::protocol::v2::*;
+}
+
 pub use schema_fixtures::SchemaFixtureOptions;
 #[doc(hidden)]
 pub use schema_fixtures::generate_typescript_schema_fixture_subtree_for_tests;
