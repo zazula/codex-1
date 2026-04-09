@@ -41,7 +41,7 @@ use codex_model_provider_info::ModelProviderInfo;
 
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../templates/compact/prompt.md");
 pub const SUMMARY_PREFIX: &str = include_str!("../templates/compact/summary_prefix.md");
-const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+pub(crate) const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
 
 /// Controls whether compaction replacement history must include initial context.
 ///
@@ -451,7 +451,7 @@ pub(crate) fn build_compacted_history(
     )
 }
 
-fn build_compacted_history_with_limit(
+pub(crate) fn build_compacted_history_with_limit(
     mut history: Vec<ResponseItem>,
     user_messages: &[String],
     summary_text: &str,
@@ -555,6 +555,47 @@ async fn drain_to_completed(
     }
 }
 
+/// Select recent user messages within a token budget.
+/// Returns messages in reverse order (most recent first).
+pub(crate) fn select_recent_user_messages(
+    user_messages: &[String],
+    max_tokens: usize,
+) -> Vec<String> {
+    let mut selected: Vec<String> = Vec::new();
+    let mut remaining = max_tokens;
+
+    for message in user_messages.iter().rev() {
+        if remaining == 0 {
+            break;
+        }
+        let tokens = approx_token_count(message);
+        if tokens <= remaining {
+            selected.push(message.clone());
+            remaining = remaining.saturating_sub(tokens);
+        } else {
+            // Try to fit a truncated version
+            let truncated = truncate_text(message, TruncationPolicy::Tokens(remaining));
+            if !truncated.is_empty() {
+                selected.push(truncated);
+            }
+            break;
+        }
+    }
+
+    selected
+}
+
+/// Build a compaction checkpoint: a summary prefix followed by selected user messages.
+/// Returns (checkpoint_content, selected_user_messages).
+pub(crate) fn build_compaction_checkpoint(
+    user_messages: &[String],
+    summary_text: &str,
+    max_tokens: usize,
+) -> (String, Vec<String>) {
+    let selected = select_recent_user_messages(user_messages, max_tokens);
+    let checkpoint = format!("{SUMMARY_PREFIX}\n{summary_text}");
+    (checkpoint, selected)
+}
 #[cfg(test)]
 #[path = "compact_tests.rs"]
 mod tests;
