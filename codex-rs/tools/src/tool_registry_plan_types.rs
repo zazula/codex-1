@@ -12,6 +12,7 @@ use std::collections::HashMap;
 pub enum ToolHandlerKind {
     AgentJobs,
     ApplyPatch,
+    CompactContext,
     CloseAgentV1,
     CloseAgentV2,
     CodeModeExecute,
