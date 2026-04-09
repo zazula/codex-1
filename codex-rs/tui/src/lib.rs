@@ -1420,10 +1420,17 @@ async fn run_ratatui_app(
     let Cli {
         prompt,
         shared,
+        auto_loop,
+        auto_loop_limit,
+        auto_loop_rate_limit,
         no_alt_screen,
         ..
     } = cli;
     let images = shared.into_inner().images;
+
+    let auto_loop_enabled = auto_loop || config.auto_loop;
+    let auto_loop_limit = auto_loop_limit.or(config.auto_loop_limit);
+    let auto_loop_rate_limit = auto_loop_rate_limit.or(config.auto_loop_rate_limit);
 
     let use_alt_screen = determine_alt_screen_mode(no_alt_screen, config.tui_alternate_screen);
     tui.set_alt_screen_enabled(use_alt_screen);
@@ -1461,6 +1468,9 @@ async fn run_ratatui_app(
         active_profile,
         prompt,
         images,
+        auto_loop_enabled,
+        auto_loop_limit,
+        auto_loop_rate_limit,
         session_selection,
         feedback,
         should_show_trust_screen, // Proxy to: is it a first run in this directory?

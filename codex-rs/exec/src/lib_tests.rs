@@ -498,3 +498,20 @@ fn sample_thread_start_response() -> ThreadStartResponse {
         reasoning_effort: None,
     }
 }
+
+#[test]
+fn normalized_auto_loop_limit_maps_zero_to_unlimited() {
+    assert_eq!(normalized_auto_loop_limit(Some(0)), u32::MAX);
+    assert_eq!(normalized_auto_loop_limit(None), DEFAULT_AUTO_LOOP_LIMIT);
+    assert_eq!(normalized_auto_loop_limit(Some(7)), 7);
+}
+
+#[test]
+fn normalized_auto_loop_rate_limit_maps_zero_to_unlimited() {
+    assert_eq!(normalized_auto_loop_rate_limit(Some(0)), 0);
+    assert_eq!(
+        normalized_auto_loop_rate_limit(None),
+        DEFAULT_AUTO_LOOP_RATE_LIMIT_PER_MINUTE
+    );
+    assert_eq!(normalized_auto_loop_rate_limit(Some(3)), 3);
+}

@@ -1650,6 +1650,9 @@ fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli)
         shared,
         approval_policy,
         web_search,
+        auto_loop,
+        auto_loop_limit,
+        auto_loop_rate_limit,
         prompt,
         config_overrides,
         ..
@@ -1662,6 +1665,15 @@ fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli)
     }
     if web_search {
         interactive.web_search = true;
+    }
+    if auto_loop {
+        interactive.auto_loop = true;
+    }
+    if auto_loop_limit.is_some() {
+        interactive.auto_loop_limit = auto_loop_limit;
+    }
+    if auto_loop_rate_limit.is_some() {
+        interactive.auto_loop_rate_limit = auto_loop_rate_limit;
     }
     if let Some(prompt) = prompt {
         // Normalize CRLF/CR to LF so CLI-provided text can't leak `\r` into TUI state.
@@ -2140,6 +2152,11 @@ mod tests {
                 "sid",
                 "--oss",
                 "--search",
+                "--auto-loop",
+                "--auto-loop-limit",
+                "7",
+                "--auto-loop-rate-limit",
+                "3",
                 "--sandbox",
                 "workspace-write",
                 "--ask-for-approval",
@@ -2172,6 +2189,9 @@ mod tests {
             Some(std::path::Path::new("/tmp"))
         );
         assert!(interactive.web_search);
+        assert!(interactive.auto_loop);
+        assert_eq!(interactive.auto_loop_limit, Some(7));
+        assert_eq!(interactive.auto_loop_rate_limit, Some(3));
         let has_a = interactive
             .images
             .iter()

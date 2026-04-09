@@ -110,14 +110,22 @@ use codex_protocol::request_permissions::RequestPermissionProfile as CoreRequest
 use codex_protocol::request_permissions::RequestPermissionsResponse as CoreRequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputAnswer as CoreRequestUserInputAnswer;
 use codex_protocol::request_user_input::RequestUserInputResponse as CoreRequestUserInputResponse;
+use codex_protocol::user_input::UserInput;
 use codex_sandboxing::policy_transforms::intersect_permission_profiles;
 use codex_shell_command::parse_command::shlex_join;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_cli::auto_loop::AutoLoopBudget;
+use codex_utils_cli::auto_loop::DEFAULT_AUTO_LOOP_LIMIT;
+use codex_utils_cli::auto_loop::DEFAULT_AUTO_LOOP_RATE_LIMIT_PER_MINUTE;
+use codex_utils_cli::auto_loop::sanitize_final_message;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
+use tokio::time::sleep;
 use tracing::error;
 use tracing::warn;
 
@@ -190,6 +198,7 @@ pub(crate) async fn apply_bespoke_event_handling(
             thread_watch_manager
                 .note_turn_completed(&conversation_id.to_string(), turn_failed)
                 .await;
+            let last_agent_message = turn_complete_event.last_agent_message.clone();
             handle_turn_complete(
                 conversation_id,
                 event_turn_id,
@@ -199,6 +208,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 &thread_state,
             )
             .await;
+            maybe_handle_auto_loop(conversation, thread_state, last_agent_message).await;
         }
         EventMsg::SkillsUpdateAvailable => {
             outgoing
@@ -981,7 +991,6 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         msg @ (EventMsg::ItemStarted(_)
-        | EventMsg::ItemCompleted(_)
         | EventMsg::PatchApplyUpdated(_)
         | EventMsg::TerminalInteraction(_)) => {
             let notification = item_event_to_server_notification(
@@ -990,6 +999,18 @@ pub(crate) async fn apply_bespoke_event_handling(
                 &event_turn_id,
             );
             outgoing.send_server_notification(notification).await;
+        }
+        EventMsg::ItemCompleted(item_completed_event) => {
+            let mut item: ThreadItem = item_completed_event.item.clone().into();
+            sanitize_agent_message_item(&mut item);
+            let notification = ItemCompletedNotification {
+                thread_id: conversation_id.to_string(),
+                turn_id: event_turn_id.clone(),
+                item,
+            };
+            outgoing
+                .send_server_notification(ServerNotification::ItemCompleted(notification))
+                .await;
         }
         EventMsg::HookStarted(event) => {
             let notification = HookStartedNotification {
@@ -2073,6 +2094,181 @@ async fn on_command_execution_request_approval_response(
     {
         error!("failed to submit ExecApproval: {err}");
     }
+}
+
+fn collab_resume_begin_item(
+    begin_event: codex_protocol::protocol::CollabResumeBeginEvent,
+) -> ThreadItem {
+    ThreadItem::CollabAgentToolCall {
+        id: begin_event.call_id,
+        tool: CollabAgentTool::ResumeAgent,
+        status: V2CollabToolCallStatus::InProgress,
+        sender_thread_id: begin_event.sender_thread_id.to_string(),
+        receiver_thread_ids: vec![begin_event.receiver_thread_id.to_string()],
+        prompt: None,
+        model: None,
+        reasoning_effort: None,
+        agents_states: HashMap::new(),
+    }
+}
+
+fn collab_resume_end_item(end_event: codex_protocol::protocol::CollabResumeEndEvent) -> ThreadItem {
+    let status = match &end_event.status {
+        codex_protocol::protocol::AgentStatus::Errored(_)
+        | codex_protocol::protocol::AgentStatus::NotFound => V2CollabToolCallStatus::Failed,
+        _ => V2CollabToolCallStatus::Completed,
+    };
+    let receiver_id = end_event.receiver_thread_id.to_string();
+    let agents_states = [(
+        receiver_id.clone(),
+        V2CollabAgentStatus::from(end_event.status),
+    )]
+    .into_iter()
+    .collect();
+    ThreadItem::CollabAgentToolCall {
+        id: end_event.call_id,
+        tool: CollabAgentTool::ResumeAgent,
+        status,
+        sender_thread_id: end_event.sender_thread_id.to_string(),
+        receiver_thread_ids: vec![receiver_id],
+        prompt: None,
+        model: None,
+        reasoning_effort: None,
+        agents_states,
+    }
+}
+
+/// similar to handle_mcp_tool_call_begin in exec
+async fn construct_mcp_tool_call_notification(
+    begin_event: McpToolCallBeginEvent,
+    thread_id: String,
+    turn_id: String,
+) -> ItemStartedNotification {
+    let item = ThreadItem::McpToolCall {
+        id: begin_event.call_id,
+        server: begin_event.invocation.server,
+        tool: begin_event.invocation.tool,
+        status: McpToolCallStatus::InProgress,
+        arguments: begin_event.invocation.arguments.unwrap_or(JsonValue::Null),
+        result: None,
+        error: None,
+        duration_ms: None,
+    };
+    ItemStartedNotification {
+        thread_id,
+        turn_id,
+        item,
+    }
+}
+
+/// similar to handle_mcp_tool_call_end in exec
+async fn construct_mcp_tool_call_end_notification(
+    end_event: McpToolCallEndEvent,
+    thread_id: String,
+    turn_id: String,
+) -> ItemCompletedNotification {
+    let status = if end_event.is_success() {
+        McpToolCallStatus::Completed
+    } else {
+        McpToolCallStatus::Failed
+    };
+    let duration_ms = i64::try_from(end_event.duration.as_millis()).ok();
+
+    let (result, error) = match &end_event.result {
+        Ok(value) => (
+            Some(McpToolCallResult {
+                content: value.content.clone(),
+                structured_content: value.structured_content.clone(),
+                meta: value.meta.clone(),
+            }),
+            None,
+        ),
+        Err(message) => (
+            None,
+            Some(McpToolCallError {
+                message: message.clone(),
+            }),
+        ),
+    };
+
+    let item = ThreadItem::McpToolCall {
+        id: end_event.call_id,
+        server: end_event.invocation.server,
+        tool: end_event.invocation.tool,
+        status,
+        arguments: end_event.invocation.arguments.unwrap_or(JsonValue::Null),
+        result,
+        error,
+        duration_ms,
+    };
+    ItemCompletedNotification {
+        thread_id,
+        turn_id,
+        item,
+    }
+}
+
+fn sanitize_agent_message_item(item: &mut ThreadItem) {
+    let ThreadItem::AgentMessage { text, .. } = item else {
+        return;
+    };
+
+    let (cleaned, _) = sanitize_final_message(Some(text.clone()));
+    *text = cleaned.unwrap_or_default();
+}
+
+async fn maybe_handle_auto_loop(
+    conversation: Arc<CodexThread>,
+    thread_state: Arc<Mutex<ThreadState>>,
+    last_agent_message: Option<String>,
+) {
+    let (_cleaned, control) = sanitize_final_message(last_agent_message);
+    let Some(control) = control else {
+        return;
+    };
+
+    let desired_message = control.desired_user_message();
+    if desired_message.trim().is_empty() {
+        warn!("auto-loop requested without a user_message; skipping");
+        return;
+    }
+
+    let mut state = thread_state.lock().await;
+    let budget = state.auto_loop_budget.get_or_insert_with(|| {
+        AutoLoopBudget::new(
+            DEFAULT_AUTO_LOOP_LIMIT,
+            DEFAULT_AUTO_LOOP_RATE_LIMIT_PER_MINUTE,
+        )
+    });
+    if let Err(reason) = budget.consume(Instant::now()) {
+        warn!("auto-loop disabled: {reason}");
+        return;
+    }
+    drop(state);
+
+    if control.wants_rebase() {
+        warn!("auto-loop rebase requested; app-server continuing without rebase");
+    }
+
+    let delay_ms = control.delay_ms.filter(|value| *value > 0);
+    tokio::spawn(async move {
+        if let Some(delay_ms) = delay_ms {
+            sleep(Duration::from_millis(delay_ms)).await;
+        }
+
+        if let Err(err) = conversation
+            .submit(Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: desired_message,
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+            })
+            .await
+        {
+            warn!("auto-loop follow-up failed: {err}");
+        }
+    });
 }
 
 #[cfg(test)]

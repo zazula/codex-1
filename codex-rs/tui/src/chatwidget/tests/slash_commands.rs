@@ -1860,3 +1860,35 @@ async fn compact_queues_user_messages_snapshot() {
         normalize_snapshot_paths(term.backend().vt100().screen().contents())
     );
 }
+
+#[tokio::test]
+async fn loop_slash_command_toggles_auto_loop_state() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    assert!(!chat.auto_loop_enabled());
+
+    chat.dispatch_command(SlashCommand::Loop);
+    let status_messages = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(status_messages.contains("Auto-loop is disabled."));
+
+    chat.handle_loop_command("on");
+    assert!(chat.auto_loop_enabled());
+    let enabled_messages = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(enabled_messages.contains("Auto-loop enabled."));
+
+    chat.handle_loop_command("off");
+    assert!(!chat.auto_loop_enabled());
+    let disabled_messages = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(disabled_messages.contains("Auto-loop disabled."));
+}

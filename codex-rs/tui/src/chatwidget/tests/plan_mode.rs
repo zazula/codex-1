@@ -46,7 +46,10 @@ async fn plan_mode_nudge_hides_while_task_or_modal_is_active() {
     assert!(!chat.bottom_pane.plan_mode_nudge_visible());
 
     chat.on_task_complete(
-        /*last_agent_message*/ None, /*duration_ms*/ None, /*from_replay*/ false,
+        /*last_agent_message*/ None,
+        /*duration_ms*/ None,
+        /*auto_loop_control*/ None,
+        /*from_replay*/ false,
     );
     chat.show_selection_view(SelectionViewParams {
         items: vec![SelectionItem {
@@ -912,6 +915,7 @@ async fn plan_implementation_popup_skips_when_messages_queued() {
     chat.on_task_complete(
         Some("Plan details".to_string()),
         /*duration_ms*/ None,
+        /*auto_loop_control*/ None,
         /*from_replay*/ false,
     );
 
@@ -939,7 +943,10 @@ async fn plan_implementation_popup_skips_without_proposed_plan() {
         }],
     });
     chat.on_task_complete(
-        /*last_agent_message*/ None, /*duration_ms*/ None, /*from_replay*/ false,
+        /*last_agent_message*/ None,
+        /*duration_ms*/ None,
+        /*auto_loop_control*/ None,
+        /*from_replay*/ false,
     );
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
@@ -961,7 +968,10 @@ async fn plan_implementation_popup_shows_after_proposed_plan_output() {
     chat.on_plan_delta("- Step 1\n- Step 2\n".to_string());
     chat.on_plan_item_completed("- Step 1\n- Step 2\n".to_string());
     chat.on_task_complete(
-        /*last_agent_message*/ None, /*duration_ms*/ None, /*from_replay*/ false,
+        /*last_agent_message*/ None,
+        /*duration_ms*/ None,
+        /*auto_loop_control*/ None,
+        /*from_replay*/ false,
     );
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
@@ -1004,7 +1014,10 @@ async fn plan_implementation_popup_skips_when_steer_follows_proposed_plan() {
 
     complete_user_message(&mut chat, "user-1", "Please continue.");
     chat.on_task_complete(
-        /*last_agent_message*/ None, /*duration_ms*/ None, /*from_replay*/ false,
+        /*last_agent_message*/ None,
+        /*duration_ms*/ None,
+        /*auto_loop_control*/ None,
+        /*from_replay*/ false,
     );
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
@@ -1051,7 +1064,10 @@ async fn plan_implementation_popup_shows_after_new_plan_follows_steer() {
         .to_string(),
     );
     chat.on_task_complete(
-        /*last_agent_message*/ None, /*duration_ms*/ None, /*from_replay*/ false,
+        /*last_agent_message*/ None,
+        /*duration_ms*/ None,
+        /*auto_loop_control*/ None,
+        /*from_replay*/ false,
     );
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
@@ -1080,7 +1096,10 @@ async fn plan_implementation_popup_skips_when_rate_limit_prompt_pending() {
     });
     chat.on_rate_limit_snapshot(Some(snapshot(/*percent*/ 92.0)));
     chat.on_task_complete(
-        /*last_agent_message*/ None, /*duration_ms*/ None, /*from_replay*/ false,
+        /*last_agent_message*/ None,
+        /*duration_ms*/ None,
+        /*auto_loop_control*/ None,
+        /*from_replay*/ false,
     );
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
@@ -1534,6 +1553,9 @@ async fn make_startup_chat_with_cli_overrides(
     let session_telemetry = test_session_telemetry(&cfg, resolved_model.as_str());
     let init = ChatWidgetInit {
         config: cfg.clone(),
+        auto_loop_enabled: false,
+        auto_loop_limit: None,
+        auto_loop_rate_limit: None,
         frame_requester: FrameRequester::test_dummy(),
         app_event_tx: AppEventSender::new(unbounded_channel::<AppEvent>().0),
         initial_user_message: None,

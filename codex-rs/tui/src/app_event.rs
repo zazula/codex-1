@@ -490,6 +490,11 @@ pub(crate) enum AppEvent {
     /// Finish buffering initial resume replay after all replay events have been queued.
     EndInitialHistoryReplayBuffer,
 
+    /// Queue a follow-up user message requested by auto-loop control.
+    QueueAutoLoopUserMessage {
+        text: String,
+    },
+
     /// Replace the contiguous run of streaming `AgentMessageCell`s at the end of
     /// the transcript with a single `AgentMarkdownCell` that stores the raw
     /// markdown source and re-renders from it on resize.

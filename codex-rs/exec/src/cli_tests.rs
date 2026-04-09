@@ -80,3 +80,21 @@ fn removed_full_auto_flag_reports_migration_path() {
         Some("warning: `--full-auto` is deprecated; use `--sandbox workspace-write` instead.")
     );
 }
+
+#[test]
+fn parses_auto_loop_flags() {
+    let cli = Cli::parse_from([
+        "codex-exec",
+        "--auto-loop",
+        "--auto-loop-limit",
+        "7",
+        "--auto-loop-rate-limit",
+        "3",
+        "hello",
+    ]);
+
+    assert!(cli.auto_loop);
+    assert_eq!(cli.auto_loop_limit, Some(7));
+    assert_eq!(cli.auto_loop_rate_limit, Some(3));
+    assert_eq!(cli.prompt.as_deref(), Some("hello"));
+}

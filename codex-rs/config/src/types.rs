@@ -617,6 +617,20 @@ pub struct Tui {
     #[serde(default)]
     pub vim_mode_default: bool,
 
+    /// Enable auto-loop control in the TUI.
+    /// Defaults to `false`.
+    #[serde(default)]
+    pub auto_loop: bool,
+
+    /// Limit how many consecutive turns auto-loop may schedule before requiring user
+    /// input. `Some(0)` means unlimited.
+    #[serde(default)]
+    pub auto_loop_limit: Option<usize>,
+
+    /// Maximum auto-loop turns allowed per minute. `Some(0)` means unlimited.
+    #[serde(default)]
+    pub auto_loop_rate_limit: Option<usize>,
+
     /// Controls whether the TUI uses the terminal's alternate screen buffer.
     ///
     /// - `auto` (default): Disable alternate screen in Zellij, enable elsewhere.

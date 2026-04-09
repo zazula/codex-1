@@ -23,11 +23,19 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::Submission;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::user_input::UserInput;
+use codex_utils_cli::auto_loop::AutoLoopBudget;
+use codex_utils_cli::auto_loop::DEFAULT_AUTO_LOOP_LIMIT;
+use codex_utils_cli::auto_loop::DEFAULT_AUTO_LOOP_RATE_LIMIT_PER_MINUTE;
+use codex_utils_cli::auto_loop::sanitize_final_message;
 use rmcp::model::CallToolResult;
 use rmcp::model::Content;
 use rmcp::model::RequestId;
 use serde_json::json;
+use std::time::Duration;
+use std::time::Instant;
 use tokio::sync::Mutex;
+use tokio::time::sleep;
+use tracing::warn;
 
 /// To adhere to MCP `tools/call` response format, include the Codex
 /// `threadId` in the `structured_content` field of the response.
@@ -201,6 +209,10 @@ async fn run_codex_tool_session_inner(
     running_requests_id_to_codex_uuid: Arc<Mutex<HashMap<RequestId, ThreadId>>>,
 ) {
     let request_id_str = request_id.to_string();
+    let mut auto_loop_budget = AutoLoopBudget::new(
+        DEFAULT_AUTO_LOOP_LIMIT,
+        DEFAULT_AUTO_LOOP_RATE_LIMIT_PER_MINUTE,
+    );
 
     // Stream events until the task needs to pause for user interaction or
     // completes.
@@ -300,12 +312,81 @@ async fn run_codex_tool_session_inner(
                     EventMsg::TurnComplete(TurnCompleteEvent {
                         last_agent_message, ..
                     }) => {
-                        let text = match last_agent_message {
-                            Some(msg) => msg,
-                            None => "".to_string(),
-                        };
+                        let (cleaned, control) = sanitize_final_message(last_agent_message);
+                        let cleaned_text = cleaned.unwrap_or_default();
+
+                        if let Some(control) = control {
+                            if let Err(reason) = auto_loop_budget.consume(Instant::now()) {
+                                warn!("auto-loop disabled: {reason}");
+                                let result = create_call_tool_result_with_thread_id(
+                                    thread_id,
+                                    cleaned_text,
+                                    /*is_error*/ None,
+                                );
+                                outgoing.send_response(request_id.clone(), result).await;
+                                running_requests_id_to_codex_uuid
+                                    .lock()
+                                    .await
+                                    .remove(&request_id);
+                                break;
+                            }
+
+                            if control.wants_rebase() {
+                                warn!(
+                                    "auto-loop rebase requested; mcp-server continuing without rebase"
+                                );
+                            }
+
+                            if let Some(delay_ms) = control.delay_ms.filter(|value| *value > 0) {
+                                sleep(Duration::from_millis(delay_ms)).await;
+                            }
+
+                            let followup = control.desired_user_message();
+                            if followup.trim().is_empty() {
+                                warn!("auto-loop requested without a user_message; stopping");
+                                let result = create_call_tool_result_with_thread_id(
+                                    thread_id,
+                                    cleaned_text,
+                                    /*is_error*/ None,
+                                );
+                                outgoing.send_response(request_id.clone(), result).await;
+                                running_requests_id_to_codex_uuid
+                                    .lock()
+                                    .await
+                                    .remove(&request_id);
+                                break;
+                            }
+
+                            if let Err(err) = thread
+                                .submit(Op::UserInput {
+                                    items: vec![UserInput::Text {
+                                        text: followup,
+                                        text_elements: Vec::new(),
+                                    }],
+                                    final_output_json_schema: None,
+                                })
+                                .await
+                            {
+                                let result = create_call_tool_result_with_thread_id(
+                                    thread_id,
+                                    format!("Failed to submit auto-loop follow-up: {err}"),
+                                    Some(true),
+                                );
+                                outgoing.send_response(request_id.clone(), result).await;
+                                running_requests_id_to_codex_uuid
+                                    .lock()
+                                    .await
+                                    .remove(&request_id);
+                                break;
+                            }
+
+                            continue;
+                        }
+
                         let result = create_call_tool_result_with_thread_id(
-                            thread_id, text, /*is_error*/ None,
+                            thread_id,
+                            cleaned_text,
+                            /*is_error*/ None,
                         );
                         outgoing.send_response(request_id.clone(), result).await;
                         // unregister the id so we don't keep it in the map

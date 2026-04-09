@@ -543,6 +543,15 @@ pub struct Config {
     /// Syntax highlighting theme override (kebab-case name).
     pub tui_theme: Option<String>,
 
+    /// Controls whether automatic follow-up turns are enabled.
+    pub auto_loop: bool,
+
+    /// Limit how many consecutive auto-loop turns may be scheduled.
+    pub auto_loop_limit: Option<usize>,
+
+    /// Maximum auto-loop turns allowed per minute.
+    pub auto_loop_rate_limit: Option<usize>,
+
     /// Terminal resize-reflow tuning knobs.
     pub terminal_resize_reflow: TerminalResizeReflowConfig,
 
@@ -3146,6 +3155,9 @@ impl Config {
                 .unwrap_or(true),
             tui_terminal_title: cfg.tui.as_ref().and_then(|t| t.terminal_title.clone()),
             tui_theme: cfg.tui.as_ref().and_then(|t| t.theme.clone()),
+            auto_loop: cfg.tui.as_ref().map(|t| t.auto_loop).unwrap_or(false),
+            auto_loop_limit: cfg.tui.as_ref().and_then(|t| t.auto_loop_limit),
+            auto_loop_rate_limit: cfg.tui.as_ref().and_then(|t| t.auto_loop_rate_limit),
             terminal_resize_reflow,
             tui_keymap: cfg
                 .tui

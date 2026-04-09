@@ -569,6 +569,9 @@ impl App {
     ) -> crate::chatwidget::ChatWidgetInit {
         crate::chatwidget::ChatWidgetInit {
             config: cfg,
+            auto_loop_enabled: self.chat_widget.auto_loop_enabled(),
+            auto_loop_limit: self.chat_widget.auto_loop_limit(),
+            auto_loop_rate_limit: self.chat_widget.auto_loop_rate_limit(),
             frame_requester: tui.frame_requester(),
             app_event_tx: self.app_event_tx.clone(),
             initial_user_message,
@@ -601,6 +604,9 @@ impl App {
         active_profile: Option<String>,
         initial_prompt: Option<String>,
         initial_images: Vec<PathBuf>,
+        auto_loop_enabled: bool,
+        auto_loop_limit: Option<usize>,
+        auto_loop_rate_limit: Option<usize>,
         session_selection: SessionSelection,
         feedback: codex_feedback::CodexFeedback,
         is_first_run: bool,
@@ -722,6 +728,9 @@ impl App {
                         .await;
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
+                    auto_loop_enabled,
+                    auto_loop_limit,
+                    auto_loop_rate_limit,
                     frame_requester: tui.frame_requester(),
                     app_event_tx: app_event_tx.clone(),
                     initial_user_message: crate::chatwidget::create_initial_user_message(
@@ -757,6 +766,9 @@ impl App {
                     })?;
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
+                    auto_loop_enabled,
+                    auto_loop_limit,
+                    auto_loop_rate_limit,
                     frame_requester: tui.frame_requester(),
                     app_event_tx: app_event_tx.clone(),
                     initial_user_message: crate::chatwidget::create_initial_user_message(
@@ -797,6 +809,9 @@ impl App {
                     })?;
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
+                    auto_loop_enabled,
+                    auto_loop_limit,
+                    auto_loop_rate_limit,
                     frame_requester: tui.frame_requester(),
                     app_event_tx: app_event_tx.clone(),
                     initial_user_message: crate::chatwidget::create_initial_user_message(

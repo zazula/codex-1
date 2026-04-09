@@ -207,6 +207,9 @@ impl ChatWidget {
             SlashCommand::Plan => {
                 self.apply_plan_slash_command();
             }
+            SlashCommand::Loop => {
+                self.handle_loop_command("");
+            }
             SlashCommand::Goal => {
                 if !self.config.features.enabled(Feature::Goals) {
                     return;
@@ -578,6 +581,9 @@ impl ChatWidget {
             SlashCommand::Ide => {
                 self.handle_ide_command_args(trimmed);
             }
+            SlashCommand::Loop => {
+                self.handle_loop_command(trimmed);
+            }
             SlashCommand::Mcp => match trimmed.to_ascii_lowercase().as_str() {
                 "verbose" => self.add_mcp_output(McpServerStatusDetail::Full),
                 _ => self.add_error_message("Usage: /mcp [verbose]".to_string()),
@@ -856,7 +862,8 @@ impl ChatWidget {
             | SlashCommand::Vim
             | SlashCommand::Diff
             | SlashCommand::Rename
-            | SlashCommand::TestApproval => QueueDrain::Continue,
+            | SlashCommand::TestApproval
+            | SlashCommand::Loop => QueueDrain::Continue,
             SlashCommand::Feedback
             | SlashCommand::New
             | SlashCommand::Clear

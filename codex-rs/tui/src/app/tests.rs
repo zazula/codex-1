@@ -386,6 +386,9 @@ async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_subm
     let model = crate::legacy_core::test_support::get_model_offline(config.model.as_deref());
     app.chat_widget = ChatWidget::new_with_app_event(ChatWidgetInit {
         config,
+        auto_loop_enabled: false,
+        auto_loop_limit: None,
+        auto_loop_rate_limit: None,
         frame_requester: crate::tui::FrameRequester::test_dummy(),
         app_event_tx: app.app_event_tx.clone(),
         initial_user_message: create_initial_user_message(
@@ -4666,6 +4669,9 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
 
     let replacement = ChatWidget::new_with_app_event(ChatWidgetInit {
         config: app.config.clone(),
+        auto_loop_enabled: false,
+        auto_loop_limit: None,
+        auto_loop_rate_limit: None,
         frame_requester: crate::tui::FrameRequester::test_dummy(),
         app_event_tx: app.app_event_tx.clone(),
         initial_user_message: None,

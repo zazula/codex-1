@@ -27,6 +27,7 @@ pub enum SlashCommand {
     #[strum(to_string = "autoreview")]
     AutoReview,
     Memories,
+    Loop,
     Skills,
     Hooks,
     Review,
@@ -128,6 +129,7 @@ impl SlashCommand {
             SlashCommand::Experimental => "toggle experimental features",
             SlashCommand::AutoReview => "approve one retry of a recent auto-review denial",
             SlashCommand::Memories => "configure memory use and generation",
+            SlashCommand::Loop => "show or control auto-loop status",
             SlashCommand::Mcp => "list configured MCP tools; use /mcp verbose for details",
             SlashCommand::Apps => "manage apps",
             SlashCommand::Plugins => "browse plugins",
@@ -157,6 +159,7 @@ impl SlashCommand {
                 | SlashCommand::Side
                 | SlashCommand::Resume
                 | SlashCommand::SandboxReadRoot
+                | SlashCommand::Loop
         )
     }
 
@@ -216,6 +219,7 @@ impl SlashCommand {
             | SlashCommand::AutoReview
             | SlashCommand::Feedback
             | SlashCommand::Ide
+            | SlashCommand::Loop
             | SlashCommand::Quit
             | SlashCommand::Exit
             | SlashCommand::Side => true,
