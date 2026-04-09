@@ -209,9 +209,13 @@ pub enum ResponseItem {
         #[schemars(skip)]
         id: String,
         summary: Vec<ReasoningItemReasoningSummary>,
-        #[serde(default, skip_serializing_if = "should_serialize_reasoning_content")]
+        /// Reasoning text content. Preserved for providers that don't support
+        /// encrypted_content (Z.AI/GLM, Moonshot/Kimi) — they need the raw
+        /// reasoning text returned in subsequent turns for multi-turn coherence.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         content: Option<Vec<ReasoningItemContent>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         encrypted_content: Option<String>,
     },
     LocalShellCall {
@@ -777,14 +781,10 @@ impl From<SandboxMode> for DeveloperInstructions {
     }
 }
 
-fn should_serialize_reasoning_content(content: &Option<Vec<ReasoningItemContent>>) -> bool {
-    match content {
-        Some(content) => !content
-            .iter()
-            .any(|c| matches!(c, ReasoningItemContent::ReasoningText { .. })),
-        None => false,
-    }
-}
+// should_serialize_reasoning_content was removed — reasoning content is now
+// always serialized when present (skip_serializing_if = "Option::is_none").
+// This is required for providers like Z.AI/GLM and Moonshot/Kimi that don't
+// support encrypted_content and need raw reasoning text returned in multi-turn.
 
 fn local_image_error_placeholder(
     path: &std::path::Path,

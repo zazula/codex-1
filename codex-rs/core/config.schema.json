@@ -315,8 +315,20 @@
         "approvals_reviewer": {
           "$ref": "#/definitions/ApprovalsReviewer"
         },
+        "cache": {
+          "description": "Enable provider-side cache controls when supported.",
+          "type": "boolean"
+        },
+        "cache_key": {
+          "description": "Optional provider-specific cache key.",
+          "type": "string"
+        },
         "chatgpt_base_url": {
           "type": "string"
+        },
+        "clear_thinking": {
+          "description": "Whether provider-side preserved thinking should be cleared at turn start.",
+          "type": "boolean"
         },
         "experimental_compact_prompt_file": {
           "$ref": "#/definitions/AbsolutePathBuf"
@@ -589,6 +601,20 @@
         },
         "service_tier": {
           "$ref": "#/definitions/ServiceTier"
+        },
+        "thinking": {
+          "description": "Enable provider-side thinking mode when supported (for example GLM).",
+          "type": "boolean"
+        },
+        "thinking_level": {
+          "description": "Optional provider-specific thinking level.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "thinking_mode": {
+          "description": "Optional provider-specific thinking mode (for example `deep`).",
+          "type": "string"
         },
         "tools": {
           "$ref": "#/definitions/ToolsToml"
@@ -2062,12 +2088,24 @@
       "minimum": 0.0,
       "type": "integer"
     },
+    "cache": {
+      "description": "Enable provider-side cache controls when supported.",
+      "type": "boolean"
+    },
+    "cache_key": {
+      "description": "Optional provider-specific cache key.",
+      "type": "string"
+    },
     "chatgpt_base_url": {
       "description": "Base URL for requests to ChatGPT (as opposed to the OpenAI API).",
       "type": "string"
     },
     "check_for_update_on_startup": {
       "description": "When `true`, checks for Codex updates on startup and surfaces update prompts. Set to `false` only if your Codex updates are centrally managed. Defaults to `true`.",
+      "type": "boolean"
+    },
+    "clear_thinking": {
+      "description": "Whether provider-side preserved thinking should be cleared at turn start.",
       "type": "boolean"
     },
     "cli_auth_credentials_store": {
@@ -2683,6 +2721,20 @@
     "suppress_unstable_features_warning": {
       "description": "Suppress warnings about unstable (under development) features.",
       "type": "boolean"
+    },
+    "thinking": {
+      "description": "Enable provider-side thinking mode when supported (for example GLM).",
+      "type": "boolean"
+    },
+    "thinking_level": {
+      "description": "Optional provider-specific thinking level.",
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "thinking_mode": {
+      "description": "Optional provider-specific thinking mode (for example `deep`).",
+      "type": "string"
     },
     "tool_output_token_limit": {
       "description": "Token budget applied when storing tool/function outputs in the context manager.",
