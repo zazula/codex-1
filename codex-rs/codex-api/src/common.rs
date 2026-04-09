@@ -114,6 +114,21 @@ pub struct Reasoning {
     pub summary: Option<ReasoningSummaryConfig>,
 }
 
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingType {
+    Enabled,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct Thinking {
+    pub r#type: ThinkingType,
+    pub clear_thinking: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<u32>,
+}
 #[derive(Debug, Serialize, Default, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TextFormatType {
@@ -180,6 +195,12 @@ pub struct ResponsesApiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<Thinking>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<TextControls>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_metadata: Option<HashMap<String, String>>,
@@ -201,6 +222,9 @@ impl From<&ResponsesApiRequest> for ResponseCreateWsRequest {
             include: request.include.clone(),
             service_tier: request.service_tier.clone(),
             prompt_cache_key: request.prompt_cache_key.clone(),
+            thinking: request.thinking.clone(),
+            cache: request.cache,
+            cache_key: request.cache_key.clone(),
             text: request.text.clone(),
             generate: None,
             client_metadata: request.client_metadata.clone(),
@@ -227,6 +251,12 @@ pub struct ResponseCreateWsRequest {
     pub service_tier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<Thinking>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<TextControls>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -864,7 +864,7 @@ impl Session {
                 state_db: state_db_ctx.clone(),
                 live_thread: live_thread_init.as_ref().cloned(),
                 thread_store: Arc::clone(&thread_store),
-                model_client: ModelClient::new(
+                model_client: ModelClient::new_with_model_request_options(
                     Some(Arc::clone(&auth_manager)),
                     conversation_id,
                     installation_id,
@@ -874,6 +874,14 @@ impl Session {
                     config.features.enabled(Feature::EnableRequestCompression),
                     config.features.enabled(Feature::RuntimeMetrics),
                     Self::build_model_client_beta_features_header(config.as_ref()),
+                    ModelProviderRequestOptions {
+                        thinking: config.thinking,
+                        clear_thinking: config.clear_thinking,
+                        thinking_mode: config.thinking_mode.clone(),
+                        thinking_level: config.thinking_level,
+                        cache: config.cache,
+                        cache_key: config.cache_key.clone(),
+                    },
                 ),
                 code_mode_service: crate::tools::code_mode::CodeModeService::new(),
                 environment_manager,

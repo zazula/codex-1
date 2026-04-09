@@ -34,6 +34,18 @@ pub struct ConfigProfile {
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub plan_mode_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
+    /// Enable provider-side thinking mode when supported (for example GLM).
+    pub thinking: Option<bool>,
+    /// Whether provider-side preserved thinking should be cleared at turn start.
+    pub clear_thinking: Option<bool>,
+    /// Optional provider-specific thinking mode (for example `deep`).
+    pub thinking_mode: Option<String>,
+    /// Optional provider-specific thinking level.
+    pub thinking_level: Option<u32>,
+    /// Enable provider-side cache controls when supported.
+    pub cache: Option<bool>,
+    /// Optional provider-specific cache key.
+    pub cache_key: Option<String>,
     pub model_verbosity: Option<Verbosity>,
     /// Optional path to a JSON model catalog (applied on startup only).
     pub model_catalog_json: Option<AbsolutePathBuf>,

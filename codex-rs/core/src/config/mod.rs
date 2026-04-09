@@ -688,6 +688,19 @@ pub struct Config {
     /// using the Responses API. When unset, the model catalog default is used.
     pub model_reasoning_summary: Option<ReasoningSummary>,
 
+    /// Enable provider-side thinking mode when supported (for example GLM).
+    pub thinking: bool,
+    /// Whether provider-side preserved thinking should be cleared at turn start.
+    pub clear_thinking: bool,
+    /// Optional provider-specific thinking mode (for example `deep`).
+    pub thinking_mode: Option<String>,
+    /// Optional provider-specific thinking level.
+    pub thinking_level: Option<u32>,
+    /// Enable provider-side cache controls when supported.
+    pub cache: bool,
+    /// Optional provider-specific cache key.
+    pub cache_key: Option<String>,
+
     /// Optional override to force-enable reasoning summaries for the configured model.
     pub model_supports_reasoning_summaries: Option<bool>,
 
@@ -3007,6 +3020,37 @@ impl Config {
             model_reasoning_summary: config_profile
                 .model_reasoning_summary
                 .or(cfg.model_reasoning_summary),
+            thinking: config_profile.thinking.or(cfg.thinking).unwrap_or(false),
+            clear_thinking: config_profile
+                .clear_thinking
+                .or(cfg.clear_thinking)
+                .unwrap_or(false),
+            thinking_mode: config_profile
+                .thinking_mode
+                .clone()
+                .or(cfg.thinking_mode)
+                .and_then(|v| {
+                    let t = v.trim();
+                    if t.is_empty() {
+                        None
+                    } else {
+                        Some(t.to_string())
+                    }
+                }),
+            thinking_level: config_profile.thinking_level.or(cfg.thinking_level),
+            cache: config_profile.cache.or(cfg.cache).unwrap_or(false),
+            cache_key: config_profile
+                .cache_key
+                .clone()
+                .or(cfg.cache_key)
+                .and_then(|v| {
+                    let t = v.trim();
+                    if t.is_empty() {
+                        None
+                    } else {
+                        Some(t.to_string())
+                    }
+                }),
             model_supports_reasoning_summaries: cfg.model_supports_reasoning_summaries,
             model_catalog,
             model_verbosity: config_profile.model_verbosity.or(cfg.model_verbosity),

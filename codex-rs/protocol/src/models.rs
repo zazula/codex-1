@@ -760,9 +760,13 @@ pub enum ResponseItem {
         #[schemars(skip)]
         id: String,
         summary: Vec<ReasoningItemReasoningSummary>,
-        #[serde(default, skip_serializing_if = "should_serialize_reasoning_content")]
+        /// Reasoning text content. Preserved for providers that don't support
+        /// encrypted_content (Z.AI/GLM, Moonshot/Kimi) — they need the raw
+        /// reasoning text returned in subsequent turns for multi-turn coherence.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         content: Option<Vec<ReasoningItemContent>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         encrypted_content: Option<String>,
     },
     LocalShellCall {
@@ -958,12 +962,28 @@ fn render_command_prefix(prefix: &[String]) -> String {
     format!("[{tokens}]")
 }
 
-fn should_serialize_reasoning_content(content: &Option<Vec<ReasoningItemContent>>) -> bool {
-    match content {
-        Some(content) => !content
-            .iter()
-            .any(|c| matches!(c, ReasoningItemContent::ReasoningText { .. })),
-        None => false,
+impl From<DeveloperInstructions> for ResponseItem {
+    fn from(di: DeveloperInstructions) -> Self {
+        ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: di.into_text(),
+            }],
+            end_turn: None,
+            phase: None,
+        }
+    }
+}
+
+impl From<SandboxMode> for DeveloperInstructions {
+    fn from(mode: SandboxMode) -> Self {
+        let network_access = match mode {
+            SandboxMode::DangerFullAccess => NetworkAccess::Enabled,
+            SandboxMode::WorkspaceWrite | SandboxMode::ReadOnly => NetworkAccess::Restricted,
+        };
+
+        DeveloperInstructions::sandbox_text(mode, network_access)
     }
 }
 

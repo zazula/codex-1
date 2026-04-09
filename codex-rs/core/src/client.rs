@@ -55,6 +55,8 @@ use codex_api::ResponsesWebsocketConnection as ApiWebSocketConnection;
 use codex_api::ResponsesWsRequest;
 use codex_api::SharedAuthProvider;
 use codex_api::SseTelemetry;
+use codex_api::Thinking;
+use codex_api::ThinkingType;
 use codex_api::TransportError;
 use codex_api::WebsocketTelemetry;
 use codex_api::auth_header_telemetry;
@@ -145,6 +147,16 @@ const MEMORIES_SUMMARIZE_ENDPOINT: &str = "/memories/trace_summarize";
 pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
     Duration::from_millis(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS);
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ModelProviderRequestOptions {
+    pub thinking: bool,
+    pub clear_thinking: bool,
+    pub thinking_mode: Option<String>,
+    pub thinking_level: Option<u32>,
+    pub cache: bool,
+    pub cache_key: Option<String>,
+}
+
 /// Session-scoped state shared by all [`ModelClient`] clones.
 ///
 /// This is intentionally kept minimal so `ModelClient` does not need to hold a full `Config`. Most
@@ -158,6 +170,7 @@ struct ModelClientState {
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
     model_verbosity: Option<VerbosityConfig>,
+    model_request_options: ModelProviderRequestOptions,
     enable_request_compression: bool,
     include_timing_metrics: bool,
     beta_features_header: Option<String>,
@@ -305,6 +318,33 @@ impl ModelClient {
         include_timing_metrics: bool,
         beta_features_header: Option<String>,
     ) -> Self {
+        Self::new_with_model_request_options(
+            auth_manager,
+            conversation_id,
+            installation_id,
+            provider_info,
+            session_source,
+            model_verbosity,
+            enable_request_compression,
+            include_timing_metrics,
+            beta_features_header,
+            ModelProviderRequestOptions::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_model_request_options(
+        auth_manager: Option<Arc<AuthManager>>,
+        conversation_id: ThreadId,
+        installation_id: String,
+        provider_info: ModelProviderInfo,
+        session_source: SessionSource,
+        model_verbosity: Option<VerbosityConfig>,
+        enable_request_compression: bool,
+        include_timing_metrics: bool,
+        beta_features_header: Option<String>,
+        model_request_options: ModelProviderRequestOptions,
+    ) -> Self {
         let model_provider = create_model_provider(provider_info, auth_manager);
         let codex_api_key_env_enabled = model_provider
             .auth_manager()
@@ -321,6 +361,7 @@ impl ModelClient {
                 auth_env_telemetry,
                 session_source,
                 model_verbosity,
+                model_request_options,
                 enable_request_compression,
                 include_timing_metrics,
                 beta_features_header,
@@ -878,6 +919,30 @@ impl ModelClientSession {
             prompt.output_schema_strict,
         );
         let prompt_cache_key = Some(self.client.state.conversation_id.to_string());
+        let is_glm_model = model_info
+            .slug
+            .rsplit('/')
+            .next()
+            .and_then(|slug| slug.get(..3))
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("glm"));
+        let thinking = if is_glm_model && self.client.state.model_request_options.thinking {
+            Some(Thinking {
+                r#type: ThinkingType::Enabled,
+                clear_thinking: self.client.state.model_request_options.clear_thinking,
+                mode: self
+                    .client
+                    .state
+                    .model_request_options
+                    .thinking_mode
+                    .clone(),
+                level: self.client.state.model_request_options.thinking_level,
+            })
+        } else {
+            None
+        };
+        let cache_enabled = is_glm_model
+            && (self.client.state.model_request_options.cache
+                || self.client.state.model_request_options.cache_key.is_some());
         let request = ResponsesApiRequest {
             model: model_info.slug.clone(),
             instructions: instructions.clone(),
@@ -895,6 +960,13 @@ impl ModelClientSession {
                 None => None,
             },
             prompt_cache_key,
+            thinking,
+            cache: cache_enabled.then_some(true),
+            cache_key: if cache_enabled {
+                self.client.state.model_request_options.cache_key.clone()
+            } else {
+                None
+            },
             text,
             client_metadata: Some(HashMap::from([(
                 X_CODEX_INSTALLATION_ID_HEADER.to_string(),
