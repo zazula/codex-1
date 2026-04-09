@@ -83,6 +83,11 @@ use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_cli::auto_loop::AutoLoopBudget;
+use codex_utils_cli::auto_loop::DEFAULT_AUTO_LOOP_LIMIT;
+use codex_utils_cli::auto_loop::DEFAULT_AUTO_LOOP_RATE_LIMIT_PER_MINUTE;
+use codex_utils_cli::auto_loop::ensure_auto_loop_hint;
+use codex_utils_cli::auto_loop::sanitize_final_message;
 use codex_utils_oss::ensure_oss_provider_ready;
 use codex_utils_oss::get_default_model_for_oss_provider;
 use event_processor_with_human_output::EventProcessorWithHumanOutput;
@@ -128,6 +133,9 @@ use std::io::IsTerminal;
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 use supports_color::Stream;
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -185,6 +193,8 @@ impl RequestIdSequencer {
 
 struct ExecRunArgs {
     in_process_start_args: InProcessClientStartArgs,
+    auto_loop_budget: Option<AutoLoopBudget>,
+    auto_loop_enabled: bool,
     command: Option<ExecCommand>,
     config: Config,
     dangerously_bypass_approvals_and_sandbox: bool,
@@ -230,6 +240,9 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         color,
         last_message_file,
         json: json_mode,
+        auto_loop,
+        auto_loop_limit,
+        auto_loop_rate_limit,
         sandbox_mode: sandbox_mode_cli_arg,
         prompt,
         output_schema: output_schema_path,
@@ -391,12 +404,17 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         additional_writable_roots: add_dir,
     };
 
-    let config = ConfigBuilder::default()
+    let mut config = ConfigBuilder::default()
         .cli_overrides(cli_kv_overrides)
         .harness_overrides(overrides)
         .cloud_requirements(cloud_requirements)
         .build()
         .await?;
+
+    if auto_loop {
+        let existing = config.developer_instructions.take();
+        config.developer_instructions = Some(ensure_auto_loop_hint(existing.as_deref()));
+    }
 
     #[allow(clippy::print_stderr)]
     match check_execpolicy_for_warnings(&config.config_layer_stack).await {
@@ -482,8 +500,17 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     };
+    let auto_loop_enabled = auto_loop;
+    let auto_loop_budget = auto_loop_enabled.then(|| {
+        AutoLoopBudget::new(
+            normalized_auto_loop_limit(auto_loop_limit),
+            normalized_auto_loop_rate_limit(auto_loop_rate_limit),
+        )
+    });
     run_exec_session(ExecRunArgs {
         in_process_start_args,
+        auto_loop_budget,
+        auto_loop_enabled,
         command,
         config,
         dangerously_bypass_approvals_and_sandbox,
@@ -505,6 +532,8 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
 async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     let ExecRunArgs {
         in_process_start_args,
+        mut auto_loop_budget,
+        mut auto_loop_enabled,
         command,
         config,
         dangerously_bypass_approvals_and_sandbox,
@@ -703,12 +732,14 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             let _ = interrupt_tx.send(());
         }
     });
+    let mut follow_up_output_schema: Option<Value> = None;
 
     let task_id = match initial_operation {
         InitialOperation::UserTurn {
             items,
             output_schema,
         } => {
+            follow_up_output_schema = output_schema.clone();
             let response: TurnStartResponse = send_request_with_response(
                 &client,
                 ClientRequest::TurnStart {
@@ -716,7 +747,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     params: TurnStartParams {
                         thread_id: primary_thread_id_for_span.clone(),
                         input: items.into_iter().map(Into::into).collect(),
-                        cwd: Some(default_cwd),
+                        cwd: Some(default_cwd.clone()),
                         approval_policy: Some(default_approval_policy.into()),
                         approvals_reviewer: None,
                         sandbox_policy: Some(default_sandbox_policy.clone().into()),
@@ -839,9 +870,106 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     &primary_thread_id_for_requests,
                     &task_id,
                 ) {
+                    // Check for auto-loop control in TurnCompleted notification
+                    let auto_loop_control = if auto_loop_enabled {
+                        if let ServerNotification::TurnCompleted(turn_completed) = &notification {
+                            let last_agent_message = turn_completed
+                                .turn
+                                .items
+                                .iter()
+                                .filter_map(|item| match item {
+                                    codex_app_server_protocol::ThreadItem::AgentMessage {
+                                        text,
+                                        ..
+                                    } => Some(text.clone()),
+                                    _ => None,
+                                })
+                                .last();
+                            let (_cleaned, control) = sanitize_final_message(last_agent_message);
+                            control
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                     match event_processor.process_server_notification(notification) {
                         CodexStatus::Running => {}
                         CodexStatus::InitiateShutdown => {
+                            if let Some(control) = auto_loop_control {
+                                if let Some(budget) = auto_loop_budget.as_mut()
+                                    && let Err(reason) = budget.consume(std::time::Instant::now())
+                                {
+                                    eprintln!("auto-loop disabled: {reason}");
+                                    auto_loop_enabled = false;
+                                    auto_loop_budget = None;
+                                    if let Err(err) = request_shutdown(
+                                        &client,
+                                        &mut request_ids,
+                                        &primary_thread_id_for_requests,
+                                    )
+                                    .await
+                                    {
+                                        warn!("thread/unsubscribe failed during shutdown: {err}");
+                                    }
+                                    break;
+                                }
+
+                                if let Some(delay_ms) = control.delay_ms
+                                    && delay_ms > 0
+                                {
+                                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms))
+                                        .await;
+                                }
+
+                                if let Some(note) = control.note.as_deref() {
+                                    eprintln!("auto-loop: {note}");
+                                } else {
+                                    eprintln!("auto-loop: scheduling another turn");
+                                }
+
+                                if control.wants_rebase() {
+                                    eprintln!(
+                                        "auto-loop rebase requested; exec continuing without rebase"
+                                    );
+                                }
+
+                                let desired_message = control.desired_user_message();
+                                let response: TurnStartResponse = send_request_with_response(
+                                    &client,
+                                    ClientRequest::TurnStart {
+                                        request_id: request_ids.next(),
+                                        params: TurnStartParams {
+                                            thread_id: primary_thread_id_for_requests.clone(),
+                                            input: vec![
+                                                codex_app_server_protocol::UserInput::Text {
+                                                    text: desired_message,
+                                                    text_elements: Vec::new(),
+                                                },
+                                            ],
+                                            cwd: Some(default_cwd.clone()),
+                                            approval_policy: Some(default_approval_policy.into()),
+                                            approvals_reviewer: None,
+                                            sandbox_policy: Some(
+                                                default_sandbox_policy.clone().into(),
+                                            ),
+                                            model: None,
+                                            service_tier: None,
+                                            effort: default_effort,
+                                            summary: None,
+                                            personality: None,
+                                            output_schema: follow_up_output_schema.clone(),
+                                            collaboration_mode: None,
+                                        },
+                                    },
+                                    "turn/start",
+                                )
+                                .await
+                                .map_err(anyhow::Error::msg)?;
+                                continue;
+                            }
+
                             if let Err(err) = request_shutdown(
                                 &client,
                                 &mut request_ids,
@@ -1713,6 +1841,24 @@ fn build_review_request(args: &ReviewArgs) -> anyhow::Result<ReviewRequest> {
         target,
         user_facing_hint: None,
     })
+}
+
+fn normalized_auto_loop_limit(value: Option<usize>) -> u32 {
+    let resolved = value.unwrap_or(DEFAULT_AUTO_LOOP_LIMIT as usize);
+    if resolved == 0 {
+        u32::MAX
+    } else {
+        u32::try_from(resolved).unwrap_or(u32::MAX)
+    }
+}
+
+fn normalized_auto_loop_rate_limit(value: Option<usize>) -> u32 {
+    let resolved = value.unwrap_or(DEFAULT_AUTO_LOOP_RATE_LIMIT_PER_MINUTE as usize);
+    if resolved == 0 {
+        0
+    } else {
+        u32::try_from(resolved).unwrap_or(u32::MAX)
+    }
 }
 
 #[cfg(test)]

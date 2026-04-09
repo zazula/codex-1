@@ -121,6 +121,9 @@ async fn helpers_are_available_and_do_not_panic() {
     let session_telemetry = test_session_telemetry(&cfg, resolved_model.as_str());
     let init = ChatWidgetInit {
         config: cfg.clone(),
+        auto_loop_enabled: false,
+        auto_loop_limit: None,
+        auto_loop_rate_limit: None,
         frame_requester: FrameRequester::test_dummy(),
         app_event_tx: tx,
         initial_user_message: None,
@@ -1127,7 +1130,10 @@ async fn runtime_metrics_websocket_timing_logs_and_final_separator_sums_totals()
         .expect("expected websocket timing log");
     assert!(second_log.contains("TTFT: 80ms (iapi)"));
 
-    chat.on_task_complete(/*last_agent_message*/ None, /*from_replay*/ false);
+    chat.on_task_complete(
+        /*last_agent_message*/ None, /*auto_loop_control*/ None,
+        /*from_replay*/ false,
+    );
     let mut final_separator = None;
     while let Ok(event) = rx.try_recv() {
         if let AppEvent::InsertHistoryCell(cell) = event {

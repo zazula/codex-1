@@ -255,6 +255,24 @@ const PLAN_MODE_REASONING_SCOPE_ALL_MODES: &str = "Apply to global default and P
 const CONNECTORS_SELECTION_VIEW_ID: &str = "connectors-selection";
 const TUI_STUB_MESSAGE: &str = "Not available in TUI yet.";
 
+fn normalized_auto_loop_limit(value: Option<usize>) -> u32 {
+    let resolved = value.unwrap_or(DEFAULT_AUTO_LOOP_LIMIT as usize);
+    if resolved == 0 {
+        u32::MAX
+    } else {
+        u32::try_from(resolved).unwrap_or(u32::MAX)
+    }
+}
+
+fn normalized_auto_loop_rate_limit(value: Option<usize>) -> u32 {
+    let resolved = value.unwrap_or(DEFAULT_AUTO_LOOP_RATE_LIMIT_PER_MINUTE as usize);
+    if resolved == 0 {
+        0
+    } else {
+        u32::try_from(resolved).unwrap_or(u32::MAX)
+    }
+}
+
 /// Choose the keybinding used to edit the most-recently queued message.
 ///
 /// Apple Terminal, Warp, and VSCode integrated terminals intercept or silently
@@ -382,6 +400,12 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_utils_approval_presets::ApprovalPreset;
 use codex_utils_approval_presets::builtin_approval_presets;
+use codex_utils_cli::auto_loop::AutoLoopBudget;
+use codex_utils_cli::auto_loop::AutoLoopControl;
+use codex_utils_cli::auto_loop::DEFAULT_AUTO_LOOP_LIMIT;
+use codex_utils_cli::auto_loop::DEFAULT_AUTO_LOOP_RATE_LIMIT_PER_MINUTE;
+use codex_utils_cli::auto_loop::ensure_auto_loop_hint;
+use codex_utils_cli::auto_loop::sanitize_final_message;
 use strum::IntoEnumIterator;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -548,6 +572,9 @@ pub(crate) fn get_limits_duration(windows_minutes: i64) -> String {
 /// Common initialization parameters shared by all `ChatWidget` constructors.
 pub(crate) struct ChatWidgetInit {
     pub(crate) config: Config,
+    pub(crate) auto_loop_enabled: bool,
+    pub(crate) auto_loop_limit: Option<usize>,
+    pub(crate) auto_loop_rate_limit: Option<usize>,
     pub(crate) frame_requester: FrameRequester,
     pub(crate) app_event_tx: AppEventSender,
     pub(crate) initial_user_message: Option<UserMessage>,
@@ -789,6 +816,10 @@ pub(crate) struct ChatWidget {
     last_unified_wait: Option<UnifiedExecWaitState>,
     unified_exec_wait_streak: Option<UnifiedExecWaitStreak>,
     turn_sleep_inhibitor: SleepInhibitor,
+    auto_loop_enabled: bool,
+    auto_loop_limit: Option<usize>,
+    auto_loop_rate_limit: Option<usize>,
+    auto_loop_budget: Option<AutoLoopBudget>,
     task_complete_pending: bool,
     unified_exec_processes: Vec<UnifiedExecProcessSummary>,
     /// Tracks whether codex-core currently considers an agent turn to be in progress.
@@ -2145,13 +2176,14 @@ impl ChatWidget {
     }
 
     fn finalize_completed_assistant_message(&mut self, message: Option<&str>) {
-        // If we have a stream_controller, the finalized message payload is redundant because the
-        // visible content has already been accumulated through deltas.
+        // If we have a stream_controller, then the final agent message is redundant and will be a
+        // duplicate of what has already been streamed.
+        let (cleaned_message, _) = sanitize_final_message(message.map(str::to_owned));
         if self.stream_controller.is_none()
-            && let Some(message) = message
+            && let Some(message) = cleaned_message
             && !message.is_empty()
         {
-            self.handle_streaming_delta(message.to_string());
+            self.handle_streaming_delta(message);
         }
         self.flush_answer_stream_with_separator();
         self.handle_stream_finished();
@@ -2304,7 +2336,12 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    fn on_task_complete(&mut self, last_agent_message: Option<String>, from_replay: bool) {
+    fn on_task_complete(
+        &mut self,
+        last_agent_message: Option<String>,
+        auto_loop_control: Option<AutoLoopControl>,
+        from_replay: bool,
+    ) {
         self.submit_pending_steers_after_interrupt = false;
         let copyable_turn_output = last_agent_message
             .filter(|message| !message.trim().is_empty())
@@ -2356,10 +2393,12 @@ impl ChatWidget {
         self.unified_exec_wait_streak = None;
         self.request_redraw();
 
+        let had_queued_input = !self.queued_user_messages.is_empty();
         let had_pending_steers = !self.pending_steers.is_empty();
+        let had_pending_input = had_queued_input || had_pending_steers;
         self.refresh_pending_input_preview();
 
-        if !from_replay && !self.has_queued_follow_up_messages() && !had_pending_steers {
+        if !from_replay && !had_pending_input && auto_loop_control.is_none() {
             self.maybe_prompt_plan_implementation();
         }
         // Keep this flag for replayed completion events so a subsequent live TurnComplete can
@@ -2369,6 +2408,9 @@ impl ChatWidget {
         }
         // If there is a queued user message, send exactly one now to begin the next turn.
         self.maybe_send_next_queued_input();
+        if !from_replay && !had_pending_input {
+            self.handle_auto_loop_control(auto_loop_control);
+        }
         // Emit a notification when the turn completes (suppressed if focused).
         self.notify(Notification::AgentTurnComplete {
             response: copyable_turn_output.unwrap_or_default(),
@@ -4555,6 +4597,9 @@ impl ChatWidget {
     fn new_with_op_target(common: ChatWidgetInit, codex_op_target: CodexOpTarget) -> Self {
         let ChatWidgetInit {
             config,
+            auto_loop_enabled,
+            auto_loop_limit,
+            auto_loop_rate_limit,
             frame_requester,
             app_event_tx,
             initial_user_message,
@@ -4574,6 +4619,10 @@ impl ChatWidget {
         let model = model.filter(|m| !m.trim().is_empty());
         let mut config = config;
         config.model = model.clone();
+        if auto_loop_enabled {
+            let existing = config.developer_instructions.take();
+            config.developer_instructions = Some(ensure_auto_loop_hint(existing.as_deref()));
+        }
         let prevent_idle_sleep = config.features.enabled(Feature::PreventIdleSleep);
         let mut rng = rand::rng();
         let placeholder = PLACEHOLDERS[rng.random_range(0..PLACEHOLDERS.len())].to_string();
@@ -4603,6 +4652,12 @@ impl ChatWidget {
 
         let current_cwd = Some(config.cwd.to_path_buf());
         let queued_message_edit_binding = queued_message_edit_binding_for_terminal(terminal_info());
+        let auto_loop_budget = auto_loop_enabled.then(|| {
+            AutoLoopBudget::new(
+                normalized_auto_loop_limit(auto_loop_limit),
+                normalized_auto_loop_rate_limit(auto_loop_rate_limit),
+            )
+        });
         let mut widget = Self {
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
@@ -4648,6 +4703,10 @@ impl ChatWidget {
             last_unified_wait: None,
             unified_exec_wait_streak: None,
             turn_sleep_inhibitor: SleepInhibitor::new(prevent_idle_sleep),
+            auto_loop_enabled,
+            auto_loop_limit,
+            auto_loop_rate_limit,
+            auto_loop_budget,
             task_complete_pending: false,
             unified_exec_processes: Vec::new(),
             agent_turn_running: false,
@@ -5182,6 +5241,9 @@ impl ChatWidget {
             SlashCommand::Experimental => {
                 self.open_experimental_popup();
             }
+            SlashCommand::Loop => {
+                self.handle_loop_command("");
+            }
             SlashCommand::Quit | SlashCommand::Exit => {
                 self.request_quit_without_confirmation();
             }
@@ -5476,8 +5538,160 @@ impl ChatWidget {
                     });
                 self.bottom_pane.drain_pending_submission_state();
             }
+            SlashCommand::Loop => {
+                let Some((prepared_args, _prepared_elements)) = self
+                    .bottom_pane
+                    .prepare_inline_args_submission(/*record_history*/ false)
+                else {
+                    return;
+                };
+                self.handle_loop_command(&prepared_args);
+                self.bottom_pane.drain_pending_submission_state();
+            }
             _ => self.dispatch_command(cmd),
         }
+    }
+
+    fn handle_loop_command(&mut self, rest: &str) {
+        let action = rest
+            .split_whitespace()
+            .next()
+            .map(|arg| arg.to_ascii_lowercase());
+
+        match action.as_deref() {
+            None | Some("status") => self.show_auto_loop_status(),
+            Some("on") | Some("enable") => self.toggle_auto_loop_from_command(true),
+            Some("off") | Some("disable") => self.toggle_auto_loop_from_command(false),
+            Some(bad_arg) => self.record_auto_loop_info(format!(
+                "Unknown /loop argument '{bad_arg}'. Use `/loop`, `/loop on`, or `/loop off`."
+            )),
+        }
+    }
+
+    fn toggle_auto_loop_from_command(&mut self, enabled: bool) {
+        if self.auto_loop_enabled == enabled {
+            let state = if enabled { "enabled" } else { "disabled" };
+            self.record_auto_loop_info(format!("Auto-loop is already {state}."));
+            return;
+        }
+
+        self.auto_loop_enabled = enabled;
+        self.auto_loop_budget = if enabled {
+            Some(AutoLoopBudget::new(
+                normalized_auto_loop_limit(self.auto_loop_limit),
+                normalized_auto_loop_rate_limit(self.auto_loop_rate_limit),
+            ))
+        } else {
+            None
+        };
+
+        if enabled {
+            self.record_auto_loop_info(
+                "Auto-loop enabled. Agent control stanzas may schedule follow-up turns."
+                    .to_string(),
+            );
+        } else {
+            self.record_auto_loop_info(
+                "Auto-loop disabled. Future turns will wait for manual input.".to_string(),
+            );
+        }
+    }
+
+    fn show_auto_loop_status(&mut self) {
+        self.record_auto_loop_info(self.auto_loop_status_message());
+    }
+
+    fn auto_loop_status_message(&self) -> String {
+        let state = if self.auto_loop_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        let turn_limit = normalized_auto_loop_limit(self.auto_loop_limit);
+        let turn_line = if turn_limit == u32::MAX {
+            "unlimited".to_string()
+        } else {
+            format!("{turn_limit} turns")
+        };
+        let rate_limit = normalized_auto_loop_rate_limit(self.auto_loop_rate_limit);
+        let rate_line = if rate_limit == 0 {
+            "unlimited".to_string()
+        } else {
+            format!("{rate_limit} turns/minute")
+        };
+        format!(
+            "Auto-loop is {state}.\nTurn limit: {turn_line}.\nRate limit: {rate_line}.\nUse `/loop on` or `/loop off` to change it."
+        )
+    }
+
+    fn record_auto_loop_info(&mut self, message: String) {
+        self.add_info_message(message, None);
+    }
+
+    fn handle_auto_loop_control(&mut self, control: Option<AutoLoopControl>) {
+        let Some(control) = control else {
+            return;
+        };
+        if !self.auto_loop_enabled {
+            return;
+        }
+        if !self.queued_user_messages.is_empty() {
+            self.record_auto_loop_info(
+                "Manual input queued; skipping auto-loop follow-up.".to_string(),
+            );
+            return;
+        }
+
+        if let Some(budget) = self.auto_loop_budget.as_mut()
+            && let Err(reason) = budget.consume(Instant::now())
+        {
+            self.auto_loop_enabled = false;
+            self.auto_loop_budget = None;
+            self.record_auto_loop_info(format!("Auto-loop disabled: {reason}"));
+            return;
+        }
+
+        if control.wants_rebase() {
+            self.record_auto_loop_info(
+                "Auto-loop rebase requested; continuing without rebase.".to_string(),
+            );
+        }
+        if let Some(note) = control.note.as_deref() {
+            self.record_auto_loop_info(format!("Auto-loop: {note}"));
+        }
+
+        let desired_message = control.desired_user_message();
+        if let Some(delay_ms) = control.delay_ms
+            && delay_ms > 0
+        {
+            let tx = self.app_event_tx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                tx.send(AppEvent::QueueAutoLoopUserMessage {
+                    text: desired_message,
+                });
+            });
+            return;
+        }
+
+        self.enqueue_auto_loop_message(desired_message);
+    }
+
+    pub(crate) fn enqueue_auto_loop_message(&mut self, text: String) {
+        if !self.auto_loop_enabled || self.bottom_pane.is_task_running() {
+            return;
+        }
+        if !self.queued_user_messages.is_empty() {
+            self.record_auto_loop_info(
+                "Manual input queued; skipping auto-loop follow-up.".to_string(),
+            );
+            return;
+        }
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        self.queue_user_message(text.to_string().into());
     }
 
     fn show_rename_prompt(&mut self) {
@@ -6592,7 +6806,11 @@ impl ChatWidget {
         match notification.turn.status {
             TurnStatus::Completed => {
                 self.last_non_retry_error = None;
-                self.on_task_complete(/*last_agent_message*/ None, replay_kind.is_some())
+                self.on_task_complete(
+                    /*last_agent_message*/ None,
+                    /*auto_loop_control*/ None,
+                    replay_kind.is_some(),
+                )
             }
             TurnStatus::Interrupted => {
                 self.last_non_retry_error = None;
@@ -6882,7 +7100,9 @@ impl ChatWidget {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 last_agent_message, ..
             }) => {
-                self.on_task_complete(last_agent_message, from_replay);
+                let (cleaned_message, auto_loop_control) =
+                    sanitize_final_message(last_agent_message);
+                self.on_task_complete(cleaned_message, auto_loop_control, from_replay);
             }
             EventMsg::TokenCount(ev) => {
                 self.set_token_info(ev.info);
@@ -9695,6 +9915,18 @@ impl ChatWidget {
 
     pub(crate) fn current_reasoning_effort(&self) -> Option<ReasoningEffortConfig> {
         self.effective_reasoning_effort()
+    }
+
+    pub(crate) fn auto_loop_enabled(&self) -> bool {
+        self.auto_loop_enabled
+    }
+
+    pub(crate) fn auto_loop_limit(&self) -> Option<usize> {
+        self.auto_loop_limit
+    }
+
+    pub(crate) fn auto_loop_rate_limit(&self) -> Option<usize> {
+        self.auto_loop_rate_limit
     }
 
     #[cfg(test)]

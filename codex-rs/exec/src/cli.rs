@@ -98,6 +98,18 @@ pub struct Cli {
     )]
     pub json: bool,
 
+    /// Allow the agent to request another turn by embedding a `[[CODEX-CONTROL]]` block in the final message.
+    #[arg(long = "auto-loop", default_value_t = false)]
+    pub auto_loop: bool,
+
+    /// Limit how many consecutive turns auto-loop may schedule before requiring user input (0 = unlimited).
+    #[arg(long = "auto-loop-limit", value_name = "NUM")]
+    pub auto_loop_limit: Option<usize>,
+
+    /// Maximum auto-loop turns allowed per minute (0 = unlimited).
+    #[arg(long = "auto-loop-rate-limit", value_name = "NUM")]
+    pub auto_loop_rate_limit: Option<usize>,
+
     /// Specifies file where the last message from the agent should be written.
     #[arg(
         long = "output-last-message",

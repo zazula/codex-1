@@ -1847,6 +1847,25 @@
           "description": "Enable animations (welcome screen, shimmer effects, spinners). Defaults to `true`.",
           "type": "boolean"
         },
+        "auto_loop": {
+          "default": false,
+          "description": "Enable auto-loop control in the TUI. Defaults to `false`.",
+          "type": "boolean"
+        },
+        "auto_loop_limit": {
+          "default": null,
+          "description": "Limit how many consecutive turns auto-loop may schedule before requiring user input. `Some(0)` means unlimited.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "auto_loop_rate_limit": {
+          "default": null,
+          "description": "Maximum auto-loop turns allowed per minute. `Some(0)` means unlimited.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "model_availability_nux": {
           "allOf": [
             {

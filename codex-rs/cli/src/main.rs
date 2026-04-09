@@ -1470,6 +1470,15 @@ fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli)
     if subcommand_cli.web_search {
         interactive.web_search = true;
     }
+    if subcommand_cli.auto_loop {
+        interactive.auto_loop = true;
+    }
+    if subcommand_cli.auto_loop_limit.is_some() {
+        interactive.auto_loop_limit = subcommand_cli.auto_loop_limit;
+    }
+    if subcommand_cli.auto_loop_rate_limit.is_some() {
+        interactive.auto_loop_rate_limit = subcommand_cli.auto_loop_rate_limit;
+    }
     if !subcommand_cli.images.is_empty() {
         interactive.images = subcommand_cli.images;
     }
@@ -1776,6 +1785,11 @@ mod tests {
                 "--oss",
                 "--full-auto",
                 "--search",
+                "--auto-loop",
+                "--auto-loop-limit",
+                "7",
+                "--auto-loop-rate-limit",
+                "3",
                 "--sandbox",
                 "workspace-write",
                 "--ask-for-approval",
@@ -1809,6 +1823,9 @@ mod tests {
             Some(std::path::Path::new("/tmp"))
         );
         assert!(interactive.web_search);
+        assert!(interactive.auto_loop);
+        assert_eq!(interactive.auto_loop_limit, Some(7));
+        assert_eq!(interactive.auto_loop_rate_limit, Some(3));
         let has_a = interactive
             .images
             .iter()

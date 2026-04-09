@@ -53,3 +53,21 @@ fn resume_accepts_output_last_message_flag_after_subcommand() {
     assert_eq!(args.session_id.as_deref(), Some("session-123"));
     assert_eq!(args.prompt.as_deref(), Some(PROMPT));
 }
+
+#[test]
+fn parses_auto_loop_flags() {
+    let cli = Cli::parse_from([
+        "codex-exec",
+        "--auto-loop",
+        "--auto-loop-limit",
+        "7",
+        "--auto-loop-rate-limit",
+        "3",
+        "hello",
+    ]);
+
+    assert!(cli.auto_loop);
+    assert_eq!(cli.auto_loop_limit, Some(7));
+    assert_eq!(cli.auto_loop_rate_limit, Some(3));
+    assert_eq!(cli.prompt.as_deref(), Some("hello"));
+}
