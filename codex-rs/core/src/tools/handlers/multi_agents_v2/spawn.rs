@@ -39,6 +39,11 @@ impl ToolHandler for Handler {
             .as_deref()
             .map(str::trim)
             .filter(|role| !role.is_empty());
+        let profile_name = args
+            .profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
 
         let initial_operation = parse_collab_input(Some(args.message), /*items*/ None)?;
         let prompt = render_input_preview(&initial_operation);
@@ -65,6 +70,7 @@ impl ToolHandler for Handler {
                 role_name,
                 args.model.as_deref(),
                 args.reasoning_effort,
+                profile_name,
             )?;
         } else {
             apply_requested_spawn_agent_model_overrides(
@@ -75,6 +81,8 @@ impl ToolHandler for Handler {
                 args.reasoning_effort,
             )
             .await?;
+            apply_spawn_agent_profile_override(&mut config, profile_name)
+                .map_err(FunctionCallError::RespondToModel)?;
             apply_role_to_config(&mut config, role_name)
                 .await
                 .map_err(FunctionCallError::RespondToModel)?;
@@ -219,6 +227,7 @@ struct SpawnAgentArgs {
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
+    profile: Option<String>,
     fork_turns: Option<String>,
     fork_context: Option<bool>,
 }

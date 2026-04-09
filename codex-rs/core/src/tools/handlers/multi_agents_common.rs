@@ -242,10 +242,11 @@ pub(crate) fn reject_full_fork_spawn_overrides(
     agent_type: Option<&str>,
     model: Option<&str>,
     reasoning_effort: Option<ReasoningEffort>,
+    profile: Option<&str>,
 ) -> Result<(), FunctionCallError> {
-    if agent_type.is_some() || model.is_some() || reasoning_effort.is_some() {
+    if agent_type.is_some() || model.is_some() || reasoning_effort.is_some() || profile.is_some() {
         return Err(FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
+            "Full-history forked agents inherit the parent agent type, model, reasoning effort, and profile; omit agent_type, model, reasoning_effort, and profile, or spawn without a full-history fork.".to_string(),
         ));
     }
     Ok(())
@@ -275,6 +276,35 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
         .map_err(|err| {
             FunctionCallError::RespondToModel(format!("permission_profile is invalid: {err}"))
         })?;
+    Ok(())
+}
+
+pub(crate) fn apply_spawn_agent_profile_override(
+    config: &mut Config,
+    profile: Option<&str>,
+) -> Result<(), String> {
+    let Some(profile_name) = profile else {
+        return Ok(());
+    };
+
+    let merged_toml = config.config_layer_stack.effective_config();
+    let Ok(merged_config) =
+        crate::config::deserialize_config_toml_with_base(merged_toml, &config.codex_home)
+    else {
+        return Err("failed to deserialize config for profile override".to_string());
+    };
+    let next_config = Config::load_config_with_layer_stack(
+        merged_config,
+        crate::config::ConfigOverrides {
+            config_profile: Some(profile_name.to_string()),
+            cwd: Some(config.cwd.clone().into_path_buf()),
+            ..Default::default()
+        },
+        config.codex_home.clone(),
+        config.config_layer_stack.clone(),
+    )
+    .map_err(|err| format!("failed to apply spawn_agent profile override: {err}"))?;
+    *config = next_config;
     Ok(())
 }
 
