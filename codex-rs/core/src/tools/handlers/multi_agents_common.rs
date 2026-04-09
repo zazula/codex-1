@@ -264,6 +264,35 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
     Ok(())
 }
 
+pub(crate) fn apply_spawn_agent_profile_override(
+    config: &mut Config,
+    profile: Option<&str>,
+) -> Result<(), String> {
+    let Some(profile_name) = profile else {
+        return Ok(());
+    };
+
+    let merged_toml = config.config_layer_stack.effective_config();
+    let Ok(merged_config) =
+        crate::config::deserialize_config_toml_with_base(merged_toml, &config.codex_home)
+    else {
+        return Err("failed to deserialize config for profile override".to_string());
+    };
+    let next_config = Config::load_config_with_layer_stack(
+        merged_config,
+        crate::config::ConfigOverrides {
+            config_profile: Some(profile_name.to_string()),
+            cwd: Some(config.cwd.clone().into_path_buf()),
+            ..Default::default()
+        },
+        config.codex_home.clone(),
+        config.config_layer_stack.clone(),
+    )
+    .map_err(|err| format!("failed to apply spawn_agent profile override: {err}"))?;
+    *config = next_config;
+    Ok(())
+}
+
 pub(crate) fn apply_spawn_agent_overrides(config: &mut Config, child_depth: i32) {
     if child_depth >= config.agent_max_depth && !config.features.enabled(Feature::MultiAgentV2) {
         let _ = config.features.disable(Feature::SpawnCsv);

@@ -540,6 +540,13 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
                     .to_string(),
             )),
         ),
+        (
+            "profile".to_string(),
+            JsonSchema::string(Some(
+                "Optional config profile name for the spawned agent. Use this when you want the child agent to run with a different profile/provider than the parent."
+                    .to_string(),
+            )),
+        ),
     ])
 }
 
@@ -571,6 +578,13 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
             "reasoning_effort".to_string(),
             JsonSchema::string(Some(
                 "Optional reasoning effort override for the new agent. Replaces the inherited reasoning effort."
+                    .to_string(),
+            )),
+        ),
+        (
+            "profile".to_string(),
+            JsonSchema::string(Some(
+                "Optional config profile name for the spawned agent. Use this when you want the child agent to run with a different profile/provider than the parent."
                     .to_string(),
             )),
         ),
