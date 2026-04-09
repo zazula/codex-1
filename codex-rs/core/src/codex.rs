@@ -174,6 +174,7 @@ use uuid::Uuid;
 
 use crate::client::ModelClient;
 use crate::client::ModelClientSession;
+use crate::client::ModelProviderRequestOptions;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::codex_thread::ThreadConfigSnapshot;
@@ -2014,7 +2015,7 @@ impl Session {
             network_proxy,
             network_approval: Arc::clone(&network_approval),
             state_db: state_db_ctx.clone(),
-            model_client: ModelClient::new(
+            model_client: ModelClient::new_with_model_request_options(
                 Some(Arc::clone(&auth_manager)),
                 conversation_id,
                 installation_id,
@@ -2024,6 +2025,14 @@ impl Session {
                 config.features.enabled(Feature::EnableRequestCompression),
                 config.features.enabled(Feature::RuntimeMetrics),
                 Self::build_model_client_beta_features_header(config.as_ref()),
+                ModelProviderRequestOptions {
+                    thinking: config.thinking,
+                    clear_thinking: config.clear_thinking,
+                    thinking_mode: config.thinking_mode.clone(),
+                    thinking_level: config.thinking_level,
+                    cache: config.cache,
+                    cache_key: config.cache_key.clone(),
+                },
             ),
             code_mode_service: crate::tools::code_mode::CodeModeService::new(
                 config.js_repl_node_path.clone(),
