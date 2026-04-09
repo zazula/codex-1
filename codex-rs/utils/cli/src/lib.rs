@@ -1,4 +1,5 @@
 mod approval_mode_cli_arg;
+pub mod auto_loop;
 mod config_override;
 pub(crate) mod format_env_display;
 mod sandbox_mode_cli_arg;

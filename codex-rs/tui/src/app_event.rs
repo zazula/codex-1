@@ -288,6 +288,11 @@ pub(crate) enum AppEvent {
 
     InsertHistoryCell(Box<dyn HistoryCell>),
 
+    /// Queue a follow-up user message requested by auto-loop control.
+    QueueAutoLoopUserMessage {
+        text: String,
+    },
+
     /// Apply rollback semantics to local transcript cells.
     ///
     /// This is emitted when rollback was not initiated by the current

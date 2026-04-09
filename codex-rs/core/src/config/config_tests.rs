@@ -370,6 +370,9 @@ fn config_toml_deserializes_model_availability_nux() {
                     ("gpt-foo".to_string(), 2),
                 ]),
             },
+            auto_loop: false,
+            auto_loop_limit: None,
+            auto_loop_rate_limit: None,
         }
     );
 }
@@ -390,6 +393,45 @@ fn runtime_config_defaults_model_availability_nux() {
 }
 
 #[test]
+#[test]
+fn config_toml_deserializes_auto_loop_controls() {
+    let toml = r#"
+[tui]
+auto_loop = true
+auto_loop_limit = 7
+auto_loop_rate_limit = 3
+"#;
+    let cfg: ConfigToml =
+        toml::from_str(toml).expect("TOML deserialization should succeed for auto-loop");
+    let tui = cfg.tui.expect("tui config should deserialize");
+
+    assert!(tui.auto_loop);
+    assert_eq!(tui.auto_loop_limit, Some(7));
+    assert_eq!(tui.auto_loop_rate_limit, Some(3));
+}
+
+#[test]
+fn runtime_config_respects_auto_loop_controls() -> std::io::Result<()> {
+    let toml = r#"
+[tui]
+auto_loop = true
+auto_loop_limit = 7
+auto_loop_rate_limit = 3
+"#;
+    let cfg: ConfigToml =
+        toml::from_str(toml).expect("TOML deserialization should succeed for auto-loop");
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        TempDir::new()?.path().to_path_buf(),
+    )
+    .expect("load config");
+
+    assert!(config.auto_loop);
+    assert_eq!(config.auto_loop_limit, Some(7));
+    assert_eq!(config.auto_loop_rate_limit, Some(3));
+    Ok(())
+}
 fn config_toml_deserializes_permission_profiles() {
     let toml = r#"
 default_permissions = "workspace"
@@ -1061,6 +1103,9 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             terminal_title: None,
             theme: None,
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
+            auto_loop: false,
+            auto_loop_limit: None,
+            auto_loop_rate_limit: None,
         }
     );
 }
