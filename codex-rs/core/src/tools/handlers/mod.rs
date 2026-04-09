@@ -1,5 +1,6 @@
 pub(crate) mod agent_jobs;
 pub(crate) mod apply_patch;
+mod compact_context;
 mod dynamic;
 mod js_repl;
 mod list_dir;
@@ -35,6 +36,7 @@ pub(crate) use crate::tools::code_mode::CodeModeWaitHandler;
 pub use apply_patch::ApplyPatchHandler;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
+pub use compact_context::CompactContextHandler;
 pub use dynamic::DynamicToolHandler;
 pub use js_repl::JsReplHandler;
 pub use js_repl::JsReplResetHandler;

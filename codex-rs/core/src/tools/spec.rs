@@ -41,6 +41,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
     use crate::tools::handlers::ApplyPatchHandler;
     use crate::tools::handlers::CodeModeExecuteHandler;
     use crate::tools::handlers::CodeModeWaitHandler;
+    use crate::tools::handlers::CompactContextHandler;
     use crate::tools::handlers::DynamicToolHandler;
     use crate::tools::handlers::JsReplHandler;
     use crate::tools::handlers::JsReplResetHandler;
@@ -226,6 +227,9 @@ pub(crate) fn build_specs_with_discoverable_tools(
             }
             ToolHandlerKind::ViewImage => {
                 builder.register_handler(handler.name, view_image_handler.clone());
+            }
+            ToolHandlerKind::CompactContext => {
+                builder.register_handler(handler.name, Arc::new(CompactContextHandler));
             }
             ToolHandlerKind::WaitAgentV1 => {
                 builder.register_handler(handler.name, Arc::new(WaitAgentHandler));
