@@ -39,7 +39,7 @@ clippy *args:
     cargo clippy --tests "$@"
 
 install *args:
-    cargo install --path cli --locked "{{ args }}"
+    cargo install --path cli --locked {{ if args != "" { "-- {{ args }}" } else { "" } }}
     rustup show active-toolchain
     cargo fetch
 
