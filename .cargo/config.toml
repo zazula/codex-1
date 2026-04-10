@@ -1,0 +1,4 @@
+# Lock Cargo to the workspace Cargo.lock to avoid crates.io resolution
+# picking incompatible transitive dependency versions (e.g. temporal_rs).
+[build]
+locked = true
