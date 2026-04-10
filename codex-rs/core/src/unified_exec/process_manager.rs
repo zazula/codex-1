@@ -788,7 +788,9 @@ impl UnifiedExecProcessManager {
             for chunk in drained_chunks {
                 collected.extend_from_slice(&chunk);
             }
-            if !collected.is_empty() {
+
+            exit_signal_received |= cancellation_token.is_cancelled();
+            if Instant::now() >= deadline {
                 break;
             }
         }

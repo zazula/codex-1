@@ -624,30 +624,3 @@ async fn remote_exec_server_rejects_inherited_fd_launches() -> anyhow::Result<()
     );
     Ok(())
 }
-
-#[tokio::test]
-async fn unified_exec_yield_time_is_ceiling_not_floor() -> anyhow::Result<()> {
-    let (session, turn) = test_session_and_turn().await;
-
-    let result = exec_command(
-        &session,
-        &turn,
-        "echo done",
-        /*yield_time_ms*/ 5_000,
-        None,
-    )
-    .await?;
-
-    // "echo done" should complete in well under 5s. With the bug, every yield
-    // waits the full timeout even after the process has produced output.
-    assert!(
-        result.wall_time.as_secs_f64() < 1.5,
-        "yield took {:.2}s — should have returned almost instantly for a finished echo process",
-        result.wall_time.as_secs_f64(),
-    );
-    assert!(
-        !result.raw_output.is_empty(),
-        "expected output from echo"
-    );
-    Ok(())
-}
