@@ -410,6 +410,17 @@ ignored = [
     "codex-v8-poc",
 ]
 
+
+[profile.dev]
+# Parallelize compilation across more units for this large workspace.
+codegen-units = 256
+# Write debuginfo to a separate section. This is the single biggest
+# improvement for incremental link time on both macOS (ld64) and Linux
+# (ld.bfd/gold). Packed format keeps the files small.
+split-debuginfo = "packed"
+strip = "none"
+
+
 [profile.release]
 lto = "fat"
 split-debuginfo = "off"
