@@ -492,14 +492,24 @@ strip = true
 debug = 0 # Speed up routine local test builds by skipping debug symbols.
 
 [profile.release]
-# Keep `release` fast enough for local iteration and CI while still producing
-# optimized binaries.
-lto = "thin"
+lto = "fat"
 split-debuginfo = "off"
 # Because we bundle some of these executables with the TypeScript CLI, we
 # remove everything to make the binary as small as possible.
 strip = "symbols"
-codegen-units = 16
+
+# See https://github.com/openai/codex/issues/1411 for details.
+codegen-units = 1
+
+# Faster release profile for local installs. The upstream [profile.release]
+# uses fat LTO + codegen-units=1 for maximum binary size reduction, which
+# causes 20+ minute link times on this 80-crate workspace. This profile
+# inherits release settings but uses thin LTO + parallel codegen instead.
+[profile.release-fast]
+inherits = "release"
+lto = "thin"
+codegen-units = 256
+split-debuginfo = "packed"
 
 [profile.ci-test]
 debug = 1         # Reduce debug symbol size
