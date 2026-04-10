@@ -471,7 +471,16 @@ ignored = [
 ]
 
 [profile.dev]
-debug = 0 # Speed up routine local builds by skipping debug symbols.
+# Keep line tables/backtraces while avoiding expensive full variable debug info
+# across local dev builds.
+debug = 1
+# Parallelize compilation across more units for this large workspace.
+codegen-units = 256
+# Write debuginfo to a separate section. This is the single biggest
+# improvement for incremental link time on both macOS (ld64) and Linux
+# (ld.bfd/gold). Packed format keeps the files small.
+split-debuginfo = "packed"
+strip = "none"
 
 [profile.dev-small]
 inherits = "dev"
