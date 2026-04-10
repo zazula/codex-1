@@ -19,8 +19,3 @@ rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 
-# Lock Cargo to the workspace Cargo.lock to avoid crates.io resolution
-# picking incompatible transitive dependency versions (e.g. temporal_rs).
-# This is the effective config location since the workspace root is codex-rs/.
-[build]
-locked = true
