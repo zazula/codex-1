@@ -40,7 +40,8 @@ fix *args:
 clippy *args:
     cargo clippy --tests "$@"
 
-install:
+install *args:
+    cargo install --path cli --locked "{{ args }}"
     rustup show active-toolchain
     cargo fetch
 
