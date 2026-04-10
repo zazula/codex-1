@@ -41,7 +41,8 @@ clippy *args:
     cargo clippy --tests "$@"
 
 install *args:
-    cargo install --path cli --locked --profile release-fast {{ if args != "" { "-- {{ args }}" } else { "" } }}
+    cargo build --profile release-fast -p codex-cli {{ if args != "" { "-- {{ args }}" } else { "" } }}
+    cp -f target/release-fast/codex {{ env_var_or_default("CARGO_INSTALL_ROOT", env_var("HOME") + "/.cargo") }}/bin/codex
     rustup show active-toolchain
     cargo fetch
 
