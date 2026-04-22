@@ -92,3 +92,6 @@ CHANGELOG.ignore.md
 __pycache__/
 *.pyc
 
+# artifacts
+.rlm/
+

@@ -50,6 +50,11 @@ Run `just fmt` (in `codex-rs` directory) automatically after you have finished m
 1. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `cargo test -p codex-tui`.
 2. Once those pass, if any changes were made in common, core, or protocol, run the complete test suite with `cargo test --workspace` (or `just test` if `cargo-nextest` is installed). Avoid `--all-features` for routine local runs because it expands the build matrix and can significantly increase `target/` disk usage; use it only when you specifically need full feature coverage. project-specific or individual tests can be run without asking the user, but do ask the user before running the complete test suite.
 
+- For `cargo install` builds, use `--profile release-fast` (thin LTO + parallel codegen) for much faster
+  link times while retaining good optimization, rather than the default `release` profile (fat LTO + single codegen unit,
+  which causes 20+ minute link times on this 80-crate workspace). Only use the default `release` profile when maximum
+  binary size reduction is required (e.g. for shipped artifacts).
+
 Before finalizing a large change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace‑wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Do not re-run tests after running `fix` or `fmt`.
 
 ## The `codex-core` crate

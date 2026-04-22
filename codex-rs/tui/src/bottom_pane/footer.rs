@@ -54,6 +54,31 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
+use std::time::Duration;
+use std::time::Instant;
+
+/// States for the I/O traffic indicator shown in the footer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub(crate) enum IoIndicatorState {
+    Sending,
+    Waiting,
+    Receiving,
+    Tooling,
+    Compacting,
+}
+
+/// I/O traffic indicator data rendered in the footer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct IoIndicator {
+    pub(crate) state: IoIndicatorState,
+    pub(crate) input_tokens: u64,
+    pub(crate) output_tokens: u64,
+    pub(crate) is_estimate: bool,
+    pub(crate) wait_started_at: Option<Instant>,
+    pub(crate) avg_latency_secs: Option<f64>,
+    pub(crate) tps: Option<f64>,
+}
 
 /// The rendering inputs for the footer area under the composer.
 ///
@@ -84,6 +109,8 @@ pub(crate) struct FooterProps {
     /// When both this label and the configured status line are available, they are rendered on the
     /// same row separated by ` · `.
     pub(crate) active_agent_label: Option<String>,
+    /// I/O traffic indicator overlay shown in the footer.
+    pub(crate) io_indicator: Option<IoIndicator>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -235,14 +262,28 @@ pub(crate) fn render_footer_from_props(
     show_shortcuts_hint: bool,
     show_queue_hint: bool,
 ) {
+    let mut lines = footer_from_props_lines(
+        props,
+        collaboration_mode_indicator,
+        show_cycle_hint,
+        show_shortcuts_hint,
+        show_queue_hint,
+    );
+    // Merge I/O indicator onto the first footer line when present.
+    // Skip when the status line is active — the right-side context is rendered
+    // separately by render_context_right and would overlap.
+    if let Some(io_indicator) = props.io_indicator {
+        if !props.status_line_enabled {
+            if let Some(line) = lines.get_mut(0) {
+                let io_line = io_indicator_line(io_indicator);
+                let content_width = area.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
+                let merged = merge_line_with_right(line.clone(), io_line, content_width);
+                *line = merged;
+            }
+        }
+    }
     Paragraph::new(prefix_lines(
-        footer_from_props_lines(
-            props,
-            collaboration_mode_indicator,
-            show_cycle_hint,
-            show_shortcuts_hint,
-            show_queue_hint,
-        ),
+        lines,
         " ".repeat(FOOTER_INDENT_COLS).into(),
         " ".repeat(FOOTER_INDENT_COLS).into(),
     ))
@@ -577,6 +618,89 @@ pub(crate) fn render_footer_hint_items(area: Rect, buf: &mut Buffer, items: &[(S
 /// `single_line_footer_layout` returns `SummaryLeft::Default`). Collapse and
 /// fallback decisions live in `single_line_footer_layout`; this function only
 /// formats the chosen/default content.
+fn format_duration_compact(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    if secs == 0 {
+        return "0s".to_string();
+    }
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    let mins = secs / 60;
+    let rem_secs = secs % 60;
+    if mins < 60 {
+        return format!("{mins}m {rem_secs:02}s");
+    }
+    let hours = mins / 60;
+    let rem_mins = mins % 60;
+    format!("{hours}h {rem_mins:02}m")
+}
+
+fn io_indicator_line(indicator: IoIndicator) -> Line<'static> {
+    let state_str = match indicator.state {
+        IoIndicatorState::Sending => "sending",
+        IoIndicatorState::Waiting => "waiting",
+        IoIndicatorState::Receiving => "receiving",
+        IoIndicatorState::Tooling => "tools",
+        IoIndicatorState::Compacting => "compacting",
+    };
+    let wait = indicator
+        .wait_started_at
+        .map(|start| format_duration_compact(start.elapsed()))
+        .unwrap_or_else(|| "-".to_string());
+    let avg_latency = indicator
+        .avg_latency_secs
+        .map(|lat| format_duration_compact(Duration::from_secs_f64(lat)))
+        .unwrap_or_else(|| "-".to_string());
+    let tps = indicator
+        .tps
+        .map(|tps| format!("{tps:.1}"))
+        .unwrap_or_else(|| "-".to_string());
+    let in_tokens = format_tokens_compact(indicator.input_tokens as i64);
+    let out_tokens = format_tokens_compact(indicator.output_tokens as i64);
+    let prefix = if indicator.is_estimate { "~" } else { "" };
+    let in_label = format!("{prefix}{in_tokens}");
+    let out_label = format!("{prefix}{out_tokens}");
+    Line::from(vec![
+        "I/O".dim(),
+        " ".into(),
+        state_str.cyan(),
+        " ".into(),
+        "wait".dim(),
+        " ".into(),
+        wait.into(),
+        " ".into(),
+        "avg".dim(),
+        " ".into(),
+        avg_latency.into(),
+        " ".into(),
+        "tps".dim(),
+        " ".into(),
+        tps.into(),
+        " ".into(),
+        "↓".dim(),
+        in_label.into(),
+        " ".into(),
+        "↑".dim(),
+        out_label.into(),
+    ])
+}
+
+fn merge_line_with_right(left: Line<'static>, right: Line<'static>, width: usize) -> Line<'static> {
+    let left_width: usize = left.width();
+    let right_width: usize = right.width();
+    let gap = 2;
+    if left_width + right_width + gap <= width {
+        let padding = width - left_width - right_width;
+        let mut spans = left.spans;
+        spans.push(Span::from(" ".repeat(padding)));
+        spans.extend(right.spans);
+        Line::from(spans)
+    } else {
+        left
+    }
+}
+
 fn footer_from_props_lines(
     props: &FooterProps,
     collaboration_mode_indicator: Option<CollaborationModeIndicator>,
@@ -1278,6 +1402,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
+                io_indicator: None,
             },
         );
 
@@ -1296,6 +1421,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
+                io_indicator: None,
             },
         );
 
@@ -1314,6 +1440,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
+                io_indicator: None,
             },
         );
 
@@ -1332,6 +1459,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
+                io_indicator: None,
             },
         );
 
@@ -1350,6 +1478,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
+                io_indicator: None,
             },
         );
 
@@ -1368,6 +1497,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
+                io_indicator: None,
             },
         );
 
@@ -1386,6 +1516,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
+                io_indicator: None,
             },
         );
 
@@ -1404,6 +1535,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
+                io_indicator: None,
             },
         );
 
@@ -1422,6 +1554,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
+                io_indicator: None,
             },
         );
 
@@ -1440,6 +1573,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
+                io_indicator: None,
             },
         );
 
@@ -1456,6 +1590,7 @@ mod tests {
             status_line_value: None,
             status_line_enabled: false,
             active_agent_label: None,
+            io_indicator: None,
         };
 
         snapshot_footer_with_mode_indicator(
@@ -1485,6 +1620,7 @@ mod tests {
             status_line_value: None,
             status_line_enabled: false,
             active_agent_label: None,
+            io_indicator: None,
         };
 
         snapshot_footer_with_mode_indicator(
@@ -1507,6 +1643,7 @@ mod tests {
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
             active_agent_label: None,
+            io_indicator: None,
         };
 
         snapshot_footer("footer_status_line_overrides_shortcuts", props);
@@ -1524,6 +1661,7 @@ mod tests {
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
             active_agent_label: None,
+            io_indicator: None,
         };
 
         snapshot_footer("footer_status_line_yields_to_queue_hint", props);
@@ -1541,6 +1679,7 @@ mod tests {
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
             active_agent_label: None,
+            io_indicator: None,
         };
 
         snapshot_footer("footer_status_line_overrides_draft_idle", props);
@@ -1558,6 +1697,7 @@ mod tests {
             status_line_value: None, // command timed out / empty
             status_line_enabled: true,
             active_agent_label: None,
+            io_indicator: None,
         };
 
         snapshot_footer_with_mode_indicator(
@@ -1580,6 +1720,7 @@ mod tests {
             status_line_value: None,
             status_line_enabled: false,
             active_agent_label: None,
+            io_indicator: None,
         };
 
         snapshot_footer_with_mode_indicator(
@@ -1602,6 +1743,7 @@ mod tests {
             status_line_value: None,
             status_line_enabled: true,
             active_agent_label: None,
+            io_indicator: None,
         };
 
         // has status line and no collaboration mode
@@ -1627,6 +1769,7 @@ mod tests {
             )),
             status_line_enabled: true,
             active_agent_label: None,
+            io_indicator: None,
         };
 
         snapshot_footer_with_mode_indicator(
@@ -1649,6 +1792,7 @@ mod tests {
             status_line_value: None,
             status_line_enabled: false,
             active_agent_label: Some("Robie [explorer]".to_string()),
+            io_indicator: None,
         };
 
         snapshot_footer("footer_active_agent_label", props);
@@ -1666,6 +1810,7 @@ mod tests {
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
             active_agent_label: Some("Robie [explorer]".to_string()),
+            io_indicator: None,
         };
 
         snapshot_footer("footer_status_line_with_active_agent_label", props);
@@ -1689,6 +1834,7 @@ mod tests {
             )),
             status_line_enabled: true,
             active_agent_label: None,
+            io_indicator: None,
         };
 
         let screen = render_footer_with_mode_indicator(

@@ -146,6 +146,7 @@ use super::file_search_popup::FileSearchPopup;
 use super::footer::CollaborationModeIndicator;
 use super::footer::FooterMode;
 use super::footer::FooterProps;
+use super::footer::IoIndicator;
 use super::footer::SummaryLeft;
 use super::footer::can_show_left_with_context;
 use super::footer::context_window_line;
@@ -338,6 +339,7 @@ pub(crate) struct ChatComposer {
     status_line_enabled: bool,
     // Agent label injected into the footer's contextual row when multi-agent mode is active.
     active_agent_label: Option<String>,
+    io_indicator: Option<IoIndicator>,
 }
 
 #[derive(Clone, Debug)]
@@ -462,6 +464,7 @@ impl ChatComposer {
             status_line_value: None,
             status_line_enabled: false,
             active_agent_label: None,
+            io_indicator: None,
         };
         // Apply configuration via the setter to keep side-effects centralized.
         this.set_disable_paste_burst(disable_paste_burst);
@@ -2811,6 +2814,7 @@ impl ChatComposer {
             status_line_value: self.status_line_value.clone(),
             status_line_enabled: self.status_line_enabled,
             active_agent_label: self.active_agent_label.clone(),
+            io_indicator: self.io_indicator,
         }
     }
 
@@ -3315,6 +3319,10 @@ impl ChatComposer {
         }
         self.status_line_value = status_line;
         true
+    }
+
+    pub(crate) fn set_io_indicator(&mut self, indicator: Option<IoIndicator>) {
+        self.io_indicator = indicator;
     }
 
     pub(crate) fn set_status_line_enabled(&mut self, enabled: bool) -> bool {

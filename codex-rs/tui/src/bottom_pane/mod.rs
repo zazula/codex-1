@@ -86,6 +86,8 @@ mod skill_popup;
 mod skills_toggle_view;
 mod slash_commands;
 pub(crate) use footer::CollaborationModeIndicator;
+pub(crate) use footer::IoIndicator;
+pub(crate) use footer::IoIndicatorState;
 pub(crate) use list_selection_view::ColumnWidthMode;
 pub(crate) use list_selection_view::SelectionViewParams;
 pub(crate) use list_selection_view::SideContentWidth;
@@ -1162,6 +1164,11 @@ impl BottomPane {
             flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.composer));
             RenderableItem::Owned(Box::new(flex2))
         }
+    }
+
+    pub(crate) fn set_io_indicator(&mut self, indicator: Option<IoIndicator>) {
+        self.composer.set_io_indicator(indicator);
+        self.request_redraw();
     }
 
     pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) {
