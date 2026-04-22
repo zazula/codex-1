@@ -145,8 +145,8 @@ impl StatusLineItem {
                 "Total context window size in tokens (omitted when unknown)"
             }
             StatusLineItem::UsedTokens => "Total tokens used in session (omitted when zero)",
-            StatusLineItem::TotalInputTokens => "Total input tokens used in session",
-            StatusLineItem::TotalOutputTokens => "Total output tokens used in session",
+            StatusLineItem::TotalInputTokens => "Total input tokens consumed (↓ format)",
+            StatusLineItem::TotalOutputTokens => "Total output tokens generated (↑ format)",
             StatusLineItem::SessionId => {
                 "Current session identifier (omitted until session starts)"
             }

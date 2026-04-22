@@ -1,6 +1,8 @@
 use super::*;
+use crate::bottom_pane::IoIndicatorState;
 use codex_app_server_protocol::PluginAvailability;
 use pretty_assertions::assert_eq;
+use std::time::Instant;
 
 pub(super) async fn test_config() -> Config {
     // Start from the built-in defaults so tests do not inherit host/system config.
@@ -201,6 +203,16 @@ pub(super) async fn make_chatwidget_manual(
         status_account_display: None,
         runtime_model_provider_base_url: None,
         token_info: None,
+        io_state: IoIndicatorState::Waiting,
+        io_input_tokens: 0,
+        io_output_tokens: 0,
+        io_is_estimate: false,
+        wait_started_at: Some(Instant::now()),
+        turn_started_at: None,
+        avg_latency_secs: None,
+        avg_tps: None,
+        latency_samples: 0,
+        tps_samples: 0,
         rate_limit_snapshots_by_limit_id: BTreeMap::new(),
         refreshing_status_outputs: Vec::new(),
         next_status_refresh_request_id: 0,

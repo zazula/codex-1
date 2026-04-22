@@ -289,6 +289,8 @@ use crate::bottom_pane::ExperimentalFeatureItem;
 use crate::bottom_pane::ExperimentalFeaturesView;
 use crate::bottom_pane::GoalStatusIndicator;
 use crate::bottom_pane::InputResult;
+use crate::bottom_pane::IoIndicator;
+use crate::bottom_pane::IoIndicatorState;
 use crate::bottom_pane::LocalImageAttachment;
 use crate::bottom_pane::McpServerElicitationFormRequest;
 use crate::bottom_pane::MemoriesSettingsView;
@@ -791,6 +793,16 @@ pub(crate) struct ChatWidget {
     status_account_display: Option<StatusAccountDisplay>,
     runtime_model_provider_base_url: Option<String>,
     token_info: Option<TokenUsageInfo>,
+    io_state: IoIndicatorState,
+    io_input_tokens: u64,
+    io_output_tokens: u64,
+    io_is_estimate: bool,
+    wait_started_at: Option<Instant>,
+    turn_started_at: Option<Instant>,
+    avg_latency_secs: Option<f64>,
+    avg_tps: Option<f64>,
+    latency_samples: u64,
+    tps_samples: u64,
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     next_status_refresh_request_id: u64,
@@ -1848,6 +1860,65 @@ impl ChatWidget {
 
     /// Convenience wrapper around [`Self::set_status`];
     /// updates the status indicator header and clears any existing details.
+
+    /// Sets the I/O indicator state and updates the footer.
+    fn set_io_indicator_state(&mut self, state: IoIndicatorState) {
+        self.io_state = state;
+        if state == IoIndicatorState::Waiting {
+            if self.wait_started_at.is_none() {
+                self.wait_started_at = Some(Instant::now());
+            }
+        } else {
+            self.wait_started_at = None;
+        }
+        self.update_io_indicator();
+    }
+
+    /// Rebuilds and pushes the current I/O indicator into the footer.
+    fn update_io_indicator(&mut self) {
+        let indicator = IoIndicator {
+            state: self.io_state,
+            input_tokens: self.io_input_tokens,
+            output_tokens: self.io_output_tokens,
+            is_estimate: self.io_is_estimate,
+            wait_started_at: self.wait_started_at,
+            avg_latency_secs: self.avg_latency_secs,
+            tps: self.avg_tps,
+        };
+        self.bottom_pane.set_io_indicator(Some(indicator));
+    }
+
+    /// Records turn-completion metrics (avg latency, avg tps) from the last turn.
+    fn record_turn_metrics(&mut self) {
+        let Some(started_at) = self.turn_started_at.take() else {
+            return;
+        };
+        let elapsed = started_at.elapsed();
+        let secs = elapsed.as_secs_f64();
+        if secs <= 0.0 {
+            return;
+        }
+        self.latency_samples = self.latency_samples.saturating_add(1);
+        let prev_latency = self.avg_latency_secs.unwrap_or(0.0);
+        let avg_latency = (prev_latency * (self.latency_samples as f64 - 1.0) + secs)
+            / self.latency_samples as f64;
+        self.avg_latency_secs = Some(avg_latency);
+
+        let output_tokens = self
+            .token_info
+            .as_ref()
+            .map(|info| info.last_token_usage.output_tokens.max(0) as u64)
+            .unwrap_or(0);
+        if output_tokens > 0 {
+            let tps = output_tokens as f64 / secs;
+            self.tps_samples = self.tps_samples.saturating_add(1);
+            let prev_tps = self.avg_tps.unwrap_or(0.0);
+            let avg_tps =
+                (prev_tps * (self.tps_samples as f64 - 1.0) + tps) / self.tps_samples as f64;
+            self.avg_tps = Some(avg_tps);
+        }
+    }
+
     fn set_status_header(&mut self, header: String) {
         self.set_status(
             header,
@@ -2453,6 +2524,8 @@ impl ChatWidget {
         self.set_status_header(String::from("Working"));
         self.full_reasoning_buffer.clear();
         self.reasoning_buffer.clear();
+        self.turn_started_at = Some(Instant::now());
+        self.set_io_indicator_state(IoIndicatorState::Waiting);
         self.request_redraw();
     }
 
@@ -2463,6 +2536,7 @@ impl ChatWidget {
         auto_loop_control: Option<AutoLoopControl>,
         from_replay: bool,
     ) {
+        self.record_turn_metrics();
         self.submit_pending_steers_after_interrupt = false;
         // Use `last_agent_message` from the turn-complete notification as the copy
         // source only when no earlier item-level event (AgentMessageItem, plan
@@ -3690,6 +3764,7 @@ impl ChatWidget {
         };
         let (_command, parsed_cmd) = command_execution_command_and_parsed(command, command_actions);
         self.flush_answer_stream_with_separator();
+        self.set_io_indicator_state(IoIndicatorState::Tooling);
         if is_unified_exec_source(*source) {
             if *source == ExecCommandSource::UnifiedExecStartup {
                 self.track_unified_exec_process_begin(id, process_id.as_deref(), command);
@@ -3946,6 +4021,7 @@ impl ChatWidget {
 
     fn on_web_search_begin(&mut self, call_id: String) {
         self.flush_answer_stream_with_separator();
+        self.set_io_indicator_state(IoIndicatorState::Tooling);
         self.flush_active_cell();
         self.active_cell = Some(Box::new(history_cell::new_active_web_search_call(
             call_id,
@@ -4912,6 +4988,16 @@ impl ChatWidget {
             status_account_display,
             runtime_model_provider_base_url,
             token_info: None,
+            io_state: IoIndicatorState::Waiting,
+            io_input_tokens: 0,
+            io_output_tokens: 0,
+            io_is_estimate: false,
+            wait_started_at: Some(Instant::now()),
+            turn_started_at: None,
+            avg_latency_secs: None,
+            avg_tps: None,
+            latency_samples: 0,
+            tps_samples: 0,
             rate_limit_snapshots_by_limit_id: BTreeMap::new(),
             refreshing_status_outputs: Vec::new(),
             next_status_refresh_request_id: 0,

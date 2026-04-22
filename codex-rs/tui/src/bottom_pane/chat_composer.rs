@@ -157,6 +157,7 @@ use super::footer::FooterKeyHints;
 use super::footer::FooterMode;
 use super::footer::FooterProps;
 use super::footer::GoalStatusIndicator;
+use super::footer::IoIndicator;
 use super::footer::SummaryLeft;
 use super::footer::can_show_left_with_context;
 use super::footer::context_window_line;
@@ -416,6 +417,7 @@ pub(crate) struct ChatComposer {
     footer_history_search_key: Option<KeyBinding>,
     footer_reasoning_down_key: Option<KeyBinding>,
     footer_reasoning_up_key: Option<KeyBinding>,
+    io_indicator: Option<IoIndicator>,
 }
 
 #[derive(Clone, Debug)]
@@ -611,6 +613,7 @@ impl ChatComposer {
             footer_reasoning_up_key: primary_binding(
                 &default_keymap.chat.increase_reasoning_effort,
             ),
+            io_indicator: None,
         };
         // Apply configuration via the setter to keep side-effects centralized.
         this.set_disable_paste_burst(disable_paste_burst);
@@ -3507,6 +3510,7 @@ impl ChatComposer {
                 reasoning_up: self.footer_reasoning_up_key,
             },
             active_agent_label: self.active_agent_label.clone(),
+            io_indicator: self.io_indicator,
         }
     }
 
@@ -4035,6 +4039,10 @@ impl ChatComposer {
         }
         self.status_line_value = status_line;
         true
+    }
+
+    pub(crate) fn set_io_indicator(&mut self, indicator: Option<IoIndicator>) {
+        self.io_indicator = indicator;
     }
 
     pub(crate) fn set_status_line_enabled(&mut self, enabled: bool) -> bool {
