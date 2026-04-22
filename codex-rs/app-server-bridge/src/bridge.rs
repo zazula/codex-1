@@ -2648,6 +2648,7 @@ fn parse_turn_start_params(
             .get("approvalPolicy")
             .and_then(|v| v.as_str())
             .and_then(|s| serde_json::from_value(json!(s)).ok()),
+        approvals_reviewer: None,
         sandbox_policy: None,
         model: args.get("model").and_then(|v| v.as_str()).map(String::from),
         service_tier: args
