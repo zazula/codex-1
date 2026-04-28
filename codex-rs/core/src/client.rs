@@ -333,7 +333,7 @@ impl ModelClient {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn new_with_model_request_options(
+    pub(crate) fn new_with_model_request_options(
         auth_manager: Option<Arc<AuthManager>>,
         conversation_id: ThreadId,
         installation_id: String,
@@ -954,11 +954,7 @@ impl ModelClientSession {
             store: provider.is_azure_responses_endpoint(),
             stream: true,
             include,
-            service_tier: match service_tier {
-                Some(ServiceTier::Fast) => Some("priority".to_string()),
-                Some(service_tier) => Some(service_tier.to_string()),
-                None => None,
-            },
+            service_tier: service_tier.map(|service_tier| service_tier.to_string()),
             prompt_cache_key,
             thinking,
             cache: cache_enabled.then_some(true),

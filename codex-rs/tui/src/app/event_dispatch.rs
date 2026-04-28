@@ -1267,7 +1267,7 @@ impl App {
                     Ok(()) => {
                         let status = if matches!(
                             service_tier,
-                            Some(codex_protocol::config_types::ServiceTier::Fast)
+                            Some(codex_protocol::config_types::ServiceTier::Priority)
                         ) {
                             "on"
                         } else {

@@ -399,7 +399,7 @@ pub struct Config {
     /// Optional override of model selection.
     pub model: Option<String>,
 
-    /// Effective service tier preference for new turns (`fast` or `flex`).
+    /// Effective service tier preference for new turns.
     pub service_tier: Option<ServiceTier>,
 
     /// Model used specifically for review sessions.
@@ -2679,14 +2679,6 @@ impl Config {
                 None
             }
             None => config_profile.service_tier.or(cfg.service_tier),
-        };
-        let service_tier = match service_tier {
-            Some(ServiceTier::Fast) if features.enabled(Feature::FastMode) => {
-                Some(ServiceTier::Fast)
-            }
-            Some(ServiceTier::Fast) => None,
-            Some(ServiceTier::Flex) => Some(ServiceTier::Flex),
-            None => None,
         };
 
         let compact_prompt = compact_prompt.or(cfg.compact_prompt).and_then(|value| {

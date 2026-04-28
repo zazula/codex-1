@@ -558,7 +558,7 @@ impl ChatWidget {
             )),
             StatusLineItem::SessionId => self.thread_id.map(|id| id.to_string()),
             StatusLineItem::FastMode => Some(
-                if matches!(self.current_service_tier(), Some(ServiceTier::Fast)) {
+                if matches!(self.current_service_tier(), Some(ServiceTier::Priority)) {
                     "Fast on".to_string()
                 } else {
                     "Fast off".to_string()

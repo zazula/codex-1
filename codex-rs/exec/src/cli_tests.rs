@@ -98,3 +98,35 @@ fn parses_auto_loop_flags() {
     assert_eq!(cli.auto_loop_rate_limit, Some(3));
     assert_eq!(cli.prompt.as_deref(), Some("hello"));
 }
+
+#[test]
+fn parses_service_tier_flag() {
+    let cli = Cli::parse_from(["codex-exec", "--tier", "priority", "hello"]);
+
+    assert_eq!(
+        cli.service_tier,
+        Some(codex_utils_cli::ServiceTierCliArg::Priority)
+    );
+    assert_eq!(cli.prompt.as_deref(), Some("hello"));
+}
+
+#[test]
+fn parses_service_tier_flag_after_resume_subcommand() {
+    let cli = Cli::parse_from([
+        "codex-exec",
+        "resume",
+        "session-123",
+        "--tier",
+        "batch",
+        "hello",
+    ]);
+
+    assert_eq!(
+        cli.service_tier,
+        Some(codex_utils_cli::ServiceTierCliArg::Batch)
+    );
+    let Some(Command::Resume(args)) = cli.command else {
+        panic!("expected resume command");
+    };
+    assert_eq!(args.prompt.as_deref(), Some("hello"));
+}

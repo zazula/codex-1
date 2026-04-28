@@ -178,10 +178,10 @@ impl ChatWidget {
                 self.open_model_popup();
             }
             SlashCommand::Fast => {
-                let next_tier = if matches!(self.current_service_tier(), Some(ServiceTier::Fast)) {
+                let next_tier = if matches!(self.current_service_tier(), Some(ServiceTier::Priority)) {
                     None
                 } else {
-                    Some(ServiceTier::Fast)
+                    Some(ServiceTier::Priority)
                 };
                 self.set_service_tier_selection(next_tier);
             }
@@ -559,11 +559,11 @@ impl ChatWidget {
         match cmd {
             SlashCommand::Fast => {
                 match trimmed.to_ascii_lowercase().as_str() {
-                    "on" => self.set_service_tier_selection(Some(ServiceTier::Fast)),
+                    "on" => self.set_service_tier_selection(Some(ServiceTier::Priority)),
                     "off" => self.set_service_tier_selection(/*service_tier*/ None),
                     "status" => {
                         let status =
-                            if matches!(self.current_service_tier(), Some(ServiceTier::Fast)) {
+                            if matches!(self.current_service_tier(), Some(ServiceTier::Priority)) {
                                 "on"
                             } else {
                                 "off"

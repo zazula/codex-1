@@ -9410,7 +9410,7 @@ impl ChatWidget {
         service_tier: Option<ServiceTier>,
     ) -> bool {
         self.model_supports_fast_mode(model)
-            && matches!(service_tier, Some(ServiceTier::Fast))
+            && matches!(service_tier, Some(ServiceTier::Priority))
             && self.has_chatgpt_account
     }
 

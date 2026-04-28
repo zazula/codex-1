@@ -10528,7 +10528,7 @@ mod tests {
             path: None,
             model: None,
             model_provider: None,
-            service_tier: Some(Some(codex_protocol::config_types::ServiceTier::Fast)),
+            service_tier: Some(Some(codex_protocol::config_types::ServiceTier::Priority)),
             cwd: None,
             approval_policy: None,
             approvals_reviewer: None,
@@ -10558,7 +10558,7 @@ mod tests {
 
         assert_eq!(
             collect_resume_override_mismatches(&request, &config_snapshot),
-            vec!["service_tier requested=Some(Fast) active=Some(Flex)".to_string()]
+            vec!["service_tier requested=Some(Priority) active=Some(Flex)".to_string()]
         );
     }
 

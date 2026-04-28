@@ -1,6 +1,7 @@
 //! Shared command-line flags used by both interactive and non-interactive Codex entry points.
 
 use crate::SandboxModeCliArg;
+use crate::ServiceTierCliArg;
 use clap::Args;
 use std::path::PathBuf;
 
@@ -32,6 +33,10 @@ pub struct SharedCliOptions {
     /// Configuration profile from config.toml to specify default options.
     #[arg(long = "profile", short = 'p')]
     pub config_profile: Option<String>,
+
+    /// Service tier to request for model responses.
+    #[arg(long = "tier", value_enum, value_name = "TIER")]
+    pub service_tier: Option<ServiceTierCliArg>,
 
     /// Select the sandbox policy to use when executing model-generated shell
     /// commands.
@@ -66,6 +71,7 @@ impl SharedCliOptions {
             oss,
             oss_provider,
             config_profile,
+            service_tier,
             sandbox_mode,
             dangerously_bypass_approvals_and_sandbox,
             cwd,
@@ -77,6 +83,7 @@ impl SharedCliOptions {
             oss: root_oss,
             oss_provider: root_oss_provider,
             config_profile: root_config_profile,
+            service_tier: root_service_tier,
             sandbox_mode: root_sandbox_mode,
             dangerously_bypass_approvals_and_sandbox: root_dangerously_bypass_approvals_and_sandbox,
             cwd: root_cwd,
@@ -94,6 +101,9 @@ impl SharedCliOptions {
         }
         if config_profile.is_none() {
             config_profile.clone_from(root_config_profile);
+        }
+        if service_tier.is_none() {
+            *service_tier = *root_service_tier;
         }
         if sandbox_mode.is_none() {
             *sandbox_mode = *root_sandbox_mode;
@@ -126,6 +136,7 @@ impl SharedCliOptions {
             oss,
             oss_provider,
             config_profile,
+            service_tier,
             sandbox_mode,
             dangerously_bypass_approvals_and_sandbox,
             cwd,
@@ -143,6 +154,9 @@ impl SharedCliOptions {
         }
         if let Some(config_profile) = config_profile {
             self.config_profile = Some(config_profile);
+        }
+        if let Some(service_tier) = service_tier {
+            self.service_tier = Some(service_tier);
         }
         if subcommand_selected_sandbox_mode {
             self.sandbox_mode = sandbox_mode;

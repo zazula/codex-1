@@ -1206,6 +1206,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 // Thread through relevant top-level flags (at minimum, `--profile`).
                 let overrides = ConfigOverrides {
                     config_profile: interactive.config_profile.clone(),
+                    service_tier: interactive.service_tier.map(Into::into).map(Some),
                     ..Default::default()
                 };
 
@@ -1361,6 +1362,7 @@ async fn run_debug_prompt_input_command(
     let overrides = ConfigOverrides {
         model: shared.model,
         config_profile: shared.config_profile,
+        service_tier: shared.service_tier.map(Into::into).map(Some),
         approval_policy,
         sandbox_mode,
         cwd: shared.cwd,

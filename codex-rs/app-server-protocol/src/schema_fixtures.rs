@@ -137,7 +137,7 @@ fn read_file_bytes(path: &Path) -> Result<Vec<u8>> {
         // fixture test is platform-independent.
         let text = String::from_utf8(bytes)
             .with_context(|| format!("expected UTF-8 TypeScript in {}", path.display()))?;
-        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let text = normalize_typescript_fixture_text(&text);
         // Fixture comparisons care about schema content, not whether the generator
         // re-prepended the standard banner to every TypeScript file.
         let text = text
@@ -147,6 +147,19 @@ fn read_file_bytes(path: &Path) -> Result<Vec<u8>> {
         return Ok(text.into_bytes());
     }
     Ok(bytes)
+}
+
+fn normalize_typescript_fixture_text(text: &str) -> String {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let mut normalized = text
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text.ends_with('\n') {
+        normalized.push('\n');
+    }
+    normalized
 }
 
 fn canonicalize_json(value: &Value) -> Value {
@@ -280,10 +293,7 @@ fn collect_typescript_fixture_file<T: TS + 'static + ?Sized>(
 
     let contents = T::export_to_string().context("export TypeScript fixture content")?;
     let output_path = normalize_relative_fixture_path(&output_path);
-    files.insert(
-        output_path,
-        contents.replace("\r\n", "\n").replace('\r', "\n"),
-    );
+    files.insert(output_path, normalize_typescript_fixture_text(&contents));
 
     let mut visitor = TypeScriptFixtureCollector {
         files,
