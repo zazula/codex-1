@@ -276,7 +276,7 @@ pub struct ConfigToml {
     /// Optionally specify a personality for the model
     pub personality: Option<Personality>,
 
-    /// Optional explicit service tier preference for new turns (`fast` or `flex`).
+    /// Optional explicit service tier preference for new turns.
     pub service_tier: Option<ServiceTier>,
 
     /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).

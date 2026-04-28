@@ -9214,7 +9214,7 @@ guardian_approval = true
         app.chat_widget
             .set_reasoning_effort(Some(ReasoningEffortConfig::XHigh));
         app.chat_widget
-            .set_service_tier(Some(codex_protocol::config_types::ServiceTier::Fast));
+            .set_service_tier(Some(codex_protocol::config_types::ServiceTier::Priority));
         set_chatgpt_auth(&mut app.chat_widget);
         set_fast_mode_test_catalog(&mut app.chat_widget);
 
@@ -10346,13 +10346,13 @@ guardian_approval = true
     async fn fresh_session_config_uses_current_service_tier() {
         let mut app = make_test_app().await;
         app.chat_widget
-            .set_service_tier(Some(codex_protocol::config_types::ServiceTier::Fast));
+            .set_service_tier(Some(codex_protocol::config_types::ServiceTier::Priority));
 
         let config = app.fresh_session_config();
 
         assert_eq!(
             config.service_tier,
-            Some(codex_protocol::config_types::ServiceTier::Fast)
+            Some(codex_protocol::config_types::ServiceTier::Priority)
         );
     }
 

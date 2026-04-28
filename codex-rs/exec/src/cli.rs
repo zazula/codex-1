@@ -3,6 +3,7 @@ use clap::FromArgMatches;
 use clap::Parser;
 use clap::ValueEnum;
 use codex_utils_cli::CliConfigOverrides;
+use codex_utils_cli::ServiceTierCliArg;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -46,6 +47,10 @@ pub struct Cli {
     /// Configuration profile from config.toml to specify default options.
     #[arg(long = "profile", short = 'p')]
     pub config_profile: Option<String>,
+
+    /// Service tier to request for model responses.
+    #[arg(long = "tier", value_enum, value_name = "TIER", global = true)]
+    pub service_tier: Option<ServiceTierCliArg>,
 
     /// Convenience alias for low-friction sandboxed automatic execution (--sandbox workspace-write).
     #[arg(long = "full-auto", default_value_t = false, global = true)]

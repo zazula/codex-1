@@ -252,8 +252,11 @@ impl From<WebSearchToolConfig> for WebSearchConfig {
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]
 pub enum ServiceTier {
-    Fast,
     Flex,
+    Batch,
+    #[serde(alias = "fast")]
+    Priority,
+    Default,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Display, JsonSchema, TS)]
@@ -560,6 +563,18 @@ mod tests {
             let mode: ModeKind = serde_json::from_str(&json).expect("deserialize mode");
             assert_eq!(ModeKind::Default, mode);
         }
+    }
+
+    #[test]
+    fn service_tier_deserializes_legacy_fast_as_priority() {
+        let tier: ServiceTier = serde_json::from_str("\"fast\"").expect("deserialize tier");
+        assert_eq!(ServiceTier::Priority, tier);
+    }
+
+    #[test]
+    fn service_tier_serializes_priority() {
+        let value = serde_json::to_string(&ServiceTier::Priority).expect("serialize tier");
+        assert_eq!("\"priority\"", value);
     }
 
     #[test]

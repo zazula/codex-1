@@ -1659,7 +1659,7 @@
         {
           "properties": {
             "content": {
-              "default": null,
+              "description": "Reasoning text content. Preserved for providers that don't support encrypted_content (Z.AI/GLM, Moonshot/Kimi) — they need the raw reasoning text returned in subsequent turns for multi-turn coherence.",
               "items": {
                 "$ref": "#/definitions/ReasoningItemContent"
               },
@@ -1669,6 +1669,7 @@
               ]
             },
             "encrypted_content": {
+              "default": null,
               "type": [
                 "string",
                 "null"
@@ -2432,8 +2433,10 @@
     },
     "ServiceTier": {
       "enum": [
-        "fast",
-        "flex"
+        "flex",
+        "batch",
+        "priority",
+        "default"
       ],
       "type": "string"
     },

@@ -2,6 +2,7 @@ use clap::Parser;
 use clap::ValueHint;
 use codex_utils_cli::ApprovalModeCliArg;
 use codex_utils_cli::CliConfigOverrides;
+use codex_utils_cli::ServiceTierCliArg;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -102,6 +103,10 @@ pub struct Cli {
     /// Enable live web search. When enabled, the native Responses `web_search` tool is available to the model (no per‑call approval).
     #[arg(long = "search", default_value_t = false)]
     pub web_search: bool,
+
+    /// Service tier to request for model responses.
+    #[arg(long = "tier", value_enum, value_name = "TIER")]
+    pub service_tier: Option<ServiceTierCliArg>,
 
     /// Allow the agent to request another turn by embedding a `[[CODEX-CONTROL]]` block in the final message.
     #[arg(long = "auto-loop", default_value_t = false)]

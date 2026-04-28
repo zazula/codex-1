@@ -321,8 +321,10 @@
     },
     "ServiceTier": {
       "enum": [
-        "fast",
-        "flex"
+        "flex",
+        "batch",
+        "priority",
+        "default"
       ],
       "type": "string"
     },

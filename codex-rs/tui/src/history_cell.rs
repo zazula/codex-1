@@ -1191,7 +1191,7 @@ pub(crate) fn new_session_info(
                 .or_else(|| {
                     tooltips::get_tooltip(
                         auth_plan,
-                        matches!(config.service_tier, Some(ServiceTier::Fast)),
+                        matches!(config.service_tier, Some(ServiceTier::Priority)),
                     )
                 })
                 .map(|tip| TooltipHistoryCell::new(tip, &config.cwd))

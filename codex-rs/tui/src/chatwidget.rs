@@ -5207,10 +5207,10 @@ impl ChatWidget {
                 self.open_model_popup();
             }
             SlashCommand::Fast => {
-                let next_tier = if matches!(self.config.service_tier, Some(ServiceTier::Fast)) {
+                let next_tier = if matches!(self.config.service_tier, Some(ServiceTier::Priority)) {
                     None
                 } else {
-                    Some(ServiceTier::Fast)
+                    Some(ServiceTier::Priority)
                 };
                 self.set_service_tier_selection(next_tier);
             }
@@ -5519,15 +5519,15 @@ impl ChatWidget {
                     return;
                 }
                 match trimmed.to_ascii_lowercase().as_str() {
-                    "on" => self.set_service_tier_selection(Some(ServiceTier::Fast)),
+                    "on" => self.set_service_tier_selection(Some(ServiceTier::Priority)),
                     "off" => self.set_service_tier_selection(/*service_tier*/ None),
                     "status" => {
-                        let status = if matches!(self.config.service_tier, Some(ServiceTier::Fast))
-                        {
-                            "on"
-                        } else {
-                            "off"
-                        };
+                        let status =
+                            if matches!(self.config.service_tier, Some(ServiceTier::Priority)) {
+                                "on"
+                            } else {
+                                "off"
+                            };
                         self.add_info_message(
                             format!("Fast mode is {status}."),
                             /*hint*/ None,
@@ -9835,7 +9835,7 @@ impl ChatWidget {
         service_tier: Option<ServiceTier>,
     ) -> bool {
         self.model_supports_fast_mode(model)
-            && matches!(service_tier, Some(ServiceTier::Fast))
+            && matches!(service_tier, Some(ServiceTier::Priority))
             && self.has_chatgpt_account
     }
 

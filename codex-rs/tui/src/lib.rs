@@ -806,6 +806,7 @@ pub async fn run_main(
             cwd
         },
         model_provider: model_provider_override.clone(),
+        service_tier: cli.service_tier.map(Into::into).map(Some),
         config_profile: cli.config_profile.clone(),
         codex_self_exe: arg0_paths.codex_self_exe.clone(),
         codex_linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe.clone(),

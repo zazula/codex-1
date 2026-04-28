@@ -393,7 +393,6 @@ fn runtime_config_defaults_model_availability_nux() {
 }
 
 #[test]
-#[test]
 fn config_toml_deserializes_auto_loop_controls() {
     let toml = r#"
 [tui]
@@ -432,6 +431,7 @@ auto_loop_rate_limit = 3
     assert_eq!(config.auto_loop_rate_limit, Some(3));
     Ok(())
 }
+#[test]
 fn config_toml_deserializes_permission_profiles() {
     let toml = r#"
 default_permissions = "workspace"
@@ -4590,6 +4590,12 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             model_reasoning_effort: Some(ReasoningEffort::High),
             plan_mode_reasoning_effort: None,
             model_reasoning_summary: Some(ReasoningSummary::Detailed),
+            thinking: false,
+            clear_thinking: false,
+            thinking_mode: None,
+            thinking_level: None,
+            cache: false,
+            cache_key: None,
             model_supports_reasoning_summaries: None,
             model_catalog: None,
             model_verbosity: None,
@@ -4630,6 +4636,9 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             tui_notifications: Default::default(),
             animations: true,
             show_tooltips: true,
+            auto_loop: false,
+            auto_loop_limit: None,
+            auto_loop_rate_limit: None,
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
             analytics_enabled: Some(true),
             feedback_enabled: true,
@@ -4736,6 +4745,12 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         model_reasoning_effort: None,
         plan_mode_reasoning_effort: None,
         model_reasoning_summary: None,
+        thinking: false,
+        clear_thinking: false,
+        thinking_mode: None,
+        thinking_level: None,
+        cache: false,
+        cache_key: None,
         model_supports_reasoning_summaries: None,
         model_catalog: None,
         model_verbosity: None,
@@ -4776,6 +4791,9 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         tui_notifications: Default::default(),
         animations: true,
         show_tooltips: true,
+        auto_loop: false,
+        auto_loop_limit: None,
+        auto_loop_rate_limit: None,
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
         analytics_enabled: Some(true),
         feedback_enabled: true,
@@ -4880,6 +4898,12 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         model_reasoning_effort: None,
         plan_mode_reasoning_effort: None,
         model_reasoning_summary: None,
+        thinking: false,
+        clear_thinking: false,
+        thinking_mode: None,
+        thinking_level: None,
+        cache: false,
+        cache_key: None,
         model_supports_reasoning_summaries: None,
         model_catalog: None,
         model_verbosity: None,
@@ -4920,6 +4944,9 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         tui_notifications: Default::default(),
         animations: true,
         show_tooltips: true,
+        auto_loop: false,
+        auto_loop_limit: None,
+        auto_loop_rate_limit: None,
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
         analytics_enabled: Some(false),
         feedback_enabled: true,
@@ -5010,6 +5037,12 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         model_reasoning_effort: Some(ReasoningEffort::High),
         plan_mode_reasoning_effort: None,
         model_reasoning_summary: Some(ReasoningSummary::Detailed),
+        thinking: false,
+        clear_thinking: false,
+        thinking_mode: None,
+        thinking_level: None,
+        cache: false,
+        cache_key: None,
         model_supports_reasoning_summaries: None,
         model_catalog: None,
         model_verbosity: Some(Verbosity::High),
@@ -5050,6 +5083,9 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         tui_notifications: Default::default(),
         animations: true,
         show_tooltips: true,
+        auto_loop: false,
+        auto_loop_limit: None,
+        auto_loop_rate_limit: None,
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
         analytics_enabled: Some(true),
         feedback_enabled: true,

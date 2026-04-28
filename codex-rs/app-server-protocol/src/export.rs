@@ -179,6 +179,30 @@ pub fn generate_ts_with_options(
         }
     }
 
+    strip_trailing_whitespace_from_ts_files(&ts_files)?;
+
+    Ok(())
+}
+
+fn strip_trailing_whitespace_from_ts_files(paths: &[PathBuf]) -> Result<()> {
+    for path in paths {
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        let mut normalized = content
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if content.ends_with('\n') {
+            normalized.push('\n');
+        }
+
+        if normalized != content {
+            fs::write(path, normalized)
+                .with_context(|| format!("Failed to write {}", path.display()))?;
+        }
+    }
+
     Ok(())
 }
 

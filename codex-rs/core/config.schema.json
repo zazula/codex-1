@@ -1661,8 +1661,10 @@
     },
     "ServiceTier": {
       "enum": [
-        "fast",
-        "flex"
+        "flex",
+        "batch",
+        "priority",
+        "default"
       ],
       "type": "string"
     },
@@ -2700,7 +2702,7 @@
           "$ref": "#/definitions/ServiceTier"
         }
       ],
-      "description": "Optional explicit service tier preference for new turns (`fast` or `flex`)."
+      "description": "Optional explicit service tier preference for new turns."
     },
     "shell_environment_policy": {
       "allOf": [

@@ -133,9 +133,6 @@ use std::io::IsTerminal;
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
 use supports_color::Stream;
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -231,6 +228,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         oss,
         oss_provider,
         config_profile,
+        service_tier,
         full_auto,
         dangerously_bypass_approvals_and_sandbox,
         cwd,
@@ -386,7 +384,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         sandbox_mode,
         cwd: resolved_cwd,
         model_provider: model_provider.clone(),
-        service_tier: None,
+        service_tier: service_tier.map(Into::into).map(Some),
         codex_self_exe: arg0_paths.codex_self_exe.clone(),
         codex_linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe.clone(),
         main_execve_wrapper_exe: arg0_paths.main_execve_wrapper_exe.clone(),
@@ -533,7 +531,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     let ExecRunArgs {
         in_process_start_args,
         mut auto_loop_budget,
-        mut auto_loop_enabled,
+        auto_loop_enabled,
         command,
         config,
         dangerously_bypass_approvals_and_sandbox,
@@ -902,8 +900,6 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                                     && let Err(reason) = budget.consume(std::time::Instant::now())
                                 {
                                     eprintln!("auto-loop disabled: {reason}");
-                                    auto_loop_enabled = false;
-                                    auto_loop_budget = None;
                                     if let Err(err) = request_shutdown(
                                         &client,
                                         &mut request_ids,
@@ -936,7 +932,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                                 }
 
                                 let desired_message = control.desired_user_message();
-                                let response: TurnStartResponse = send_request_with_response(
+                                let _: TurnStartResponse = send_request_with_response(
                                     &client,
                                     ClientRequest::TurnStart {
                                         request_id: request_ids.next(),
@@ -1028,6 +1024,7 @@ fn thread_start_params_from_config(config: &Config) -> ThreadStartParams {
         approval_policy: Some(config.permissions.approval_policy.value().into()),
         approvals_reviewer: approvals_reviewer_override_from_config(config),
         sandbox: sandbox_mode_from_policy(config.permissions.sandbox_policy.get()),
+        service_tier: config.service_tier.map(Some),
         config: config_request_overrides_from_config(config),
         ephemeral: Some(config.ephemeral),
         ..ThreadStartParams::default()
@@ -1043,6 +1040,7 @@ fn thread_resume_params_from_config(config: &Config, thread_id: String) -> Threa
         approval_policy: Some(config.permissions.approval_policy.value().into()),
         approvals_reviewer: approvals_reviewer_override_from_config(config),
         sandbox: sandbox_mode_from_policy(config.permissions.sandbox_policy.get()),
+        service_tier: config.service_tier.map(Some),
         config: config_request_overrides_from_config(config),
         ..ThreadResumeParams::default()
     }

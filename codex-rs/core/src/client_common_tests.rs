@@ -25,6 +25,9 @@ fn serializes_text_verbosity_when_set() {
         include: vec![],
         prompt_cache_key: None,
         service_tier: None,
+        thinking: None,
+        cache: None,
+        cache_key: None,
         text: Some(TextControls {
             verbosity: Some(OpenAiVerbosity::Low),
             format: None,
@@ -69,6 +72,9 @@ fn serializes_text_schema_with_strict_format() {
         include: vec![],
         prompt_cache_key: None,
         service_tier: None,
+        thinking: None,
+        cache: None,
+        cache_key: None,
         text: Some(text_controls),
         client_metadata: None,
     };
@@ -107,6 +113,9 @@ fn omits_text_when_not_set() {
         include: vec![],
         prompt_cache_key: None,
         service_tier: None,
+        thinking: None,
+        cache: None,
+        cache_key: None,
         text: None,
         client_metadata: None,
     };
@@ -116,7 +125,7 @@ fn omits_text_when_not_set() {
 }
 
 #[test]
-fn serializes_flex_service_tier_when_set() {
+fn serializes_service_tier_when_set() {
     let req = ResponsesApiRequest {
         model: "gpt-5.1".to_string(),
         instructions: "i".to_string(),
@@ -129,7 +138,10 @@ fn serializes_flex_service_tier_when_set() {
         stream: true,
         include: vec![],
         prompt_cache_key: None,
-        service_tier: Some(ServiceTier::Flex.to_string()),
+        service_tier: Some(ServiceTier::Priority.to_string()),
+        thinking: None,
+        cache: None,
+        cache_key: None,
         text: None,
         client_metadata: None,
     };
@@ -137,7 +149,36 @@ fn serializes_flex_service_tier_when_set() {
     let v = serde_json::to_value(&req).expect("json");
     assert_eq!(
         v.get("service_tier").and_then(|tier| tier.as_str()),
-        Some("flex")
+        Some("priority")
+    );
+}
+
+#[test]
+fn serializes_batch_service_tier_when_set() {
+    let req = ResponsesApiRequest {
+        model: "gpt-5.1".to_string(),
+        instructions: "i".to_string(),
+        input: vec![],
+        tools: vec![],
+        tool_choice: "auto".to_string(),
+        parallel_tool_calls: true,
+        reasoning: None,
+        store: false,
+        stream: true,
+        include: vec![],
+        prompt_cache_key: None,
+        service_tier: Some(ServiceTier::Batch.to_string()),
+        thinking: None,
+        cache: None,
+        cache_key: None,
+        text: None,
+        client_metadata: None,
+    };
+
+    let v = serde_json::to_value(&req).expect("json");
+    assert_eq!(
+        v.get("service_tier").and_then(|tier| tier.as_str()),
+        Some("batch")
     );
 }
 

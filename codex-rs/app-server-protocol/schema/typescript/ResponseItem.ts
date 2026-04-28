@@ -11,7 +11,13 @@ import type { ReasoningItemContent } from "./ReasoningItemContent";
 import type { ReasoningItemReasoningSummary } from "./ReasoningItemReasoningSummary";
 import type { WebSearchAction } from "./WebSearchAction";
 
-export type ResponseItem = { "type": "message", role: string, content: Array<ContentItem>, end_turn?: boolean, phase?: MessagePhase, } | { "type": "reasoning", summary: Array<ReasoningItemReasoningSummary>, content?: Array<ReasoningItemContent>, encrypted_content: string | null, } | { "type": "local_shell_call", 
+export type ResponseItem = { "type": "message", role: string, content: Array<ContentItem>, end_turn?: boolean, phase?: MessagePhase, } | { "type": "reasoning", summary: Array<ReasoningItemReasoningSummary>,
+/**
+ * Reasoning text content. Preserved for providers that don't support
+ * encrypted_content (Z.AI/GLM, Moonshot/Kimi) — they need the raw
+ * reasoning text returned in subsequent turns for multi-turn coherence.
+ */
+content?: Array<ReasoningItemContent>, encrypted_content: string | null, } | { "type": "local_shell_call",
 /**
  * Set when using the Responses API.
  */
