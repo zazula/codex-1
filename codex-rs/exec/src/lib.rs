@@ -928,7 +928,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                                     } => Some(text.clone()),
                                     _ => None,
                                 })
-                                .last();
+                                .next_back();
                             let (_cleaned, control) = sanitize_final_message(last_agent_message);
                             control
                         } else {
@@ -990,12 +990,13 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                                                     text_elements: Vec::new(),
                                                 },
                                             ],
+                                            responsesapi_client_metadata: None,
+                                            environments: None,
                                             cwd: Some(default_cwd.clone()),
                                             approval_policy: Some(default_approval_policy.into()),
                                             approvals_reviewer: None,
-                                            sandbox_policy: Some(
-                                                default_sandbox_policy.clone().into(),
-                                            ),
+                                            sandbox_policy: None,
+                                            permissions: None,
                                             model: None,
                                             service_tier: None,
                                             effort: default_effort,

@@ -318,7 +318,7 @@ async fn spawn_agent_fork_context_rejects_agent_type_override() {
     assert_eq!(
         err,
         FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
+            "Full-history forked agents inherit the parent agent type, model, reasoning effort, and profile; omit agent_type, model, reasoning_effort, and profile, or spawn without a full-history fork.".to_string(),
         )
     );
 }
@@ -352,7 +352,7 @@ async fn spawn_agent_fork_context_rejects_child_model_overrides() {
     assert_eq!(
         err,
             FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
+            "Full-history forked agents inherit the parent agent type, model, reasoning effort, and profile; omit agent_type, model, reasoning_effort, and profile, or spawn without a full-history fork.".to_string(),
         )
     );
 }
@@ -396,7 +396,7 @@ async fn multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override() {
     assert_eq!(
         err,
         FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
+            "Full-history forked agents inherit the parent agent type, model, reasoning effort, and profile; omit agent_type, model, reasoning_effort, and profile, or spawn without a full-history fork.".to_string(),
         )
     );
 }
@@ -436,7 +436,7 @@ async fn multi_agent_v2_spawn_defaults_to_full_fork_and_rejects_child_model_over
     assert_eq!(
         err,
             FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
+            "Full-history forked agents inherit the parent agent type, model, reasoning effort, and profile; omit agent_type, model, reasoning_effort, and profile, or spawn without a full-history fork.".to_string(),
         )
     );
 }

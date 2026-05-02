@@ -178,11 +178,12 @@ impl ChatWidget {
                 self.open_model_popup();
             }
             SlashCommand::Fast => {
-                let next_tier = if matches!(self.current_service_tier(), Some(ServiceTier::Priority)) {
-                    None
-                } else {
-                    Some(ServiceTier::Priority)
-                };
+                let next_tier =
+                    if matches!(self.current_service_tier(), Some(ServiceTier::Priority)) {
+                        None
+                    } else {
+                        Some(ServiceTier::Priority)
+                    };
                 self.set_service_tier_selection(next_tier);
             }
             SlashCommand::Realtime => {

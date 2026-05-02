@@ -1858,9 +1858,6 @@ impl ChatWidget {
         }
     }
 
-    /// Convenience wrapper around [`Self::set_status`];
-    /// updates the status indicator header and clears any existing details.
-
     /// Sets the I/O indicator state and updates the footer.
     fn set_io_indicator_state(&mut self, state: IoIndicatorState) {
         self.io_state = state;
@@ -6522,8 +6519,9 @@ impl ChatWidget {
                         ThreadItem::AgentMessage { text, .. } => Some(text.clone()),
                         _ => None,
                     })
-                    .last();
-                let (cleaned_message, auto_loop_control) = sanitize_final_message(last_agent_message);
+                    .next_back();
+                let (cleaned_message, auto_loop_control) =
+                    sanitize_final_message(last_agent_message);
                 self.on_task_complete(
                     cleaned_message,
                     notification.turn.duration_ms,
@@ -9581,10 +9579,7 @@ impl ChatWidget {
     }
 
     fn handle_loop_command(&mut self, rest: &str) {
-        let action = rest
-            .split_whitespace()
-            .next()
-            .map(|arg| arg.to_ascii_lowercase());
+        let action = rest.split_whitespace().next().map(str::to_ascii_lowercase);
 
         match action.as_deref() {
             None | Some("status") => self.show_auto_loop_status(),

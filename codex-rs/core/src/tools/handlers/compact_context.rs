@@ -1,7 +1,6 @@
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::codex::get_last_assistant_message_from_turn;
 use crate::compact::COMPACT_USER_MESSAGE_MAX_TOKENS;
 use crate::compact::SUMMARY_PREFIX;
 use crate::compact::build_compacted_history_with_limit;
@@ -9,6 +8,9 @@ use crate::compact::build_compaction_checkpoint;
 use crate::compact::collect_user_messages;
 use crate::compact::select_recent_user_messages;
 use crate::function_tool::FunctionCallError;
+use crate::session::session::Session;
+use crate::session::turn::get_last_assistant_message_from_turn;
+use crate::session::turn_context::TurnContext;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
@@ -24,6 +26,7 @@ use codex_protocol::protocol::ContextCompactedEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::WarningEvent;
+use std::sync::Arc;
 
 pub struct CompactContextHandler;
 
@@ -334,11 +337,7 @@ impl ToolHandler for CompactContextHandler {
 }
 
 fn truncate_history(items: &[ResponseItem], keep_last_items: usize) -> (usize, Vec<ResponseItem>) {
-    let filtered: Vec<ResponseItem> = items
-        .iter()
-        .filter(|item| !matches!(item, ResponseItem::GhostSnapshot { .. }))
-        .cloned()
-        .collect();
+    let filtered: Vec<ResponseItem> = items.to_vec();
     if keep_last_items >= filtered.len() {
         return (0, filtered);
     }
@@ -396,7 +395,6 @@ fn filter_by_content_type(
                         id: id.clone(),
                         role: role.clone(),
                         content: filtered,
-                        end_turn: None,
                         phase: None,
                     })
                 }
@@ -409,7 +407,7 @@ fn filter_by_content_type(
 fn remove_oldest_until_token_budget(
     mut history: crate::context_manager::ContextManager,
     max_total_tokens: usize,
-    turn: &crate::codex::TurnContext,
+    turn: &TurnContext,
 ) -> (usize, Vec<ResponseItem>) {
     let mut removed = 0usize;
     loop {
@@ -427,31 +425,21 @@ fn remove_oldest_until_token_budget(
 }
 
 async fn apply_checkpoint(
-    session: &std::sync::Arc<crate::codex::Session>,
-    turn: &std::sync::Arc<crate::codex::TurnContext>,
+    session: &Arc<Session>,
+    turn: &Arc<TurnContext>,
     user_messages: &[String],
     summary_text: &str,
     max_user_message_tokens: usize,
     include_ghost_snapshots: bool,
 ) -> Result<(), FunctionCallError> {
     let initial_context = session.build_initial_context(turn.as_ref()).await;
-    let mut new_history = build_compacted_history_with_limit(
+    let new_history = build_compacted_history_with_limit(
         initial_context,
         user_messages,
         summary_text,
         max_user_message_tokens,
     );
-    if include_ghost_snapshots {
-        let ghost_snapshots: Vec<ResponseItem> = session
-            .clone_history()
-            .await
-            .raw_items()
-            .to_vec()
-            .into_iter()
-            .filter(|item| matches!(item, ResponseItem::GhostSnapshot { .. }))
-            .collect();
-        new_history.extend(ghost_snapshots);
-    }
+    let _ = include_ghost_snapshots;
     session.replace_history(new_history, None).await;
     session.recompute_token_usage(turn).await;
     record_compaction(session, turn, summary_text).await;
@@ -459,22 +447,15 @@ async fn apply_checkpoint(
 }
 
 async fn apply_truncation(
-    session: &std::sync::Arc<crate::codex::Session>,
-    turn: &std::sync::Arc<crate::codex::TurnContext>,
+    session: &Arc<Session>,
+    turn: &Arc<TurnContext>,
     kept_items: Vec<ResponseItem>,
     history_snapshot: &[ResponseItem],
     include_ghost_snapshots: bool,
 ) -> Result<(), FunctionCallError> {
     let mut new_history = session.build_initial_context(turn.as_ref()).await;
     new_history.extend(kept_items);
-    if include_ghost_snapshots {
-        let ghost_snapshots = history_snapshot
-            .iter()
-            .filter(|item| matches!(item, ResponseItem::GhostSnapshot { .. }))
-            .cloned()
-            .collect::<Vec<_>>();
-        new_history.extend(ghost_snapshots);
-    }
+    let _ = (history_snapshot, include_ghost_snapshots);
     session.replace_history(new_history, None).await;
     session.recompute_token_usage(turn).await;
     record_compaction(session, turn, "").await;
@@ -482,33 +463,22 @@ async fn apply_truncation(
 }
 
 async fn apply_filtered_history(
-    session: &std::sync::Arc<crate::codex::Session>,
-    turn: &std::sync::Arc<crate::codex::TurnContext>,
+    session: &Arc<Session>,
+    turn: &Arc<TurnContext>,
     kept_items: Vec<ResponseItem>,
     history_snapshot: &[ResponseItem],
     include_ghost_snapshots: bool,
 ) -> Result<(), FunctionCallError> {
     let mut new_history = session.build_initial_context(turn.as_ref()).await;
     new_history.extend(kept_items);
-    if include_ghost_snapshots {
-        let ghost_snapshots = history_snapshot
-            .iter()
-            .filter(|item| matches!(item, ResponseItem::GhostSnapshot { .. }))
-            .cloned()
-            .collect::<Vec<_>>();
-        new_history.extend(ghost_snapshots);
-    }
+    let _ = (history_snapshot, include_ghost_snapshots);
     session.replace_history(new_history, None).await;
     session.recompute_token_usage(turn).await;
     record_compaction(session, turn, "").await;
     Ok(())
 }
 
-async fn record_compaction(
-    session: &std::sync::Arc<crate::codex::Session>,
-    turn: &std::sync::Arc<crate::codex::TurnContext>,
-    summary_text: &str,
-) {
+async fn record_compaction(session: &Arc<Session>, turn: &Arc<TurnContext>, summary_text: &str) {
     let compacted_item = CompactedItem {
         message: summary_text.to_string(),
         replacement_history: None,
@@ -540,7 +510,6 @@ mod tests {
                 content: vec![ContentItem::InputText {
                     text: "hi".to_string(),
                 }],
-                end_turn: None,
                 phase: None,
             },
             ResponseItem::Message {
@@ -549,7 +518,6 @@ mod tests {
                 content: vec![ContentItem::OutputText {
                     text: "hello".to_string(),
                 }],
-                end_turn: None,
                 phase: None,
             },
         ];
@@ -570,9 +538,9 @@ mod tests {
                 },
                 ContentItem::InputImage {
                     image_url: "file:///tmp/image.png".to_string(),
+                    detail: None,
                 },
             ],
-            end_turn: None,
             phase: None,
         }];
 

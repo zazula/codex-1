@@ -314,15 +314,14 @@ pub(crate) fn render_footer_from_props(
     // Merge I/O indicator onto the first footer line when present.
     // Skip when the status line is active — the right-side context is rendered
     // separately by render_context_right and would overlap.
-    if let Some(io_indicator) = props.io_indicator {
-        if !props.status_line_enabled {
-            if let Some(line) = lines.get_mut(0) {
-                let io_line = io_indicator_line(io_indicator);
-                let content_width = area.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
-                let merged = merge_line_with_right(line.clone(), io_line, content_width);
-                *line = merged;
-            }
-        }
+    if let Some(io_indicator) = props.io_indicator
+        && !props.status_line_enabled
+        && let Some(line) = lines.get_mut(0)
+    {
+        let io_line = io_indicator_line(io_indicator);
+        let content_width = area.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
+        let merged = merge_line_with_right(line.clone(), io_line, content_width);
+        *line = merged;
     }
     Paragraph::new(prefix_lines(
         lines,

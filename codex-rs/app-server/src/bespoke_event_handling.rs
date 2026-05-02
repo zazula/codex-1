@@ -2096,118 +2096,6 @@ async fn on_command_execution_request_approval_response(
     }
 }
 
-fn collab_resume_begin_item(
-    begin_event: codex_protocol::protocol::CollabResumeBeginEvent,
-) -> ThreadItem {
-    ThreadItem::CollabAgentToolCall {
-        id: begin_event.call_id,
-        tool: CollabAgentTool::ResumeAgent,
-        status: V2CollabToolCallStatus::InProgress,
-        sender_thread_id: begin_event.sender_thread_id.to_string(),
-        receiver_thread_ids: vec![begin_event.receiver_thread_id.to_string()],
-        prompt: None,
-        model: None,
-        reasoning_effort: None,
-        agents_states: HashMap::new(),
-    }
-}
-
-fn collab_resume_end_item(end_event: codex_protocol::protocol::CollabResumeEndEvent) -> ThreadItem {
-    let status = match &end_event.status {
-        codex_protocol::protocol::AgentStatus::Errored(_)
-        | codex_protocol::protocol::AgentStatus::NotFound => V2CollabToolCallStatus::Failed,
-        _ => V2CollabToolCallStatus::Completed,
-    };
-    let receiver_id = end_event.receiver_thread_id.to_string();
-    let agents_states = [(
-        receiver_id.clone(),
-        V2CollabAgentStatus::from(end_event.status),
-    )]
-    .into_iter()
-    .collect();
-    ThreadItem::CollabAgentToolCall {
-        id: end_event.call_id,
-        tool: CollabAgentTool::ResumeAgent,
-        status,
-        sender_thread_id: end_event.sender_thread_id.to_string(),
-        receiver_thread_ids: vec![receiver_id],
-        prompt: None,
-        model: None,
-        reasoning_effort: None,
-        agents_states,
-    }
-}
-
-/// similar to handle_mcp_tool_call_begin in exec
-async fn construct_mcp_tool_call_notification(
-    begin_event: McpToolCallBeginEvent,
-    thread_id: String,
-    turn_id: String,
-) -> ItemStartedNotification {
-    let item = ThreadItem::McpToolCall {
-        id: begin_event.call_id,
-        server: begin_event.invocation.server,
-        tool: begin_event.invocation.tool,
-        status: McpToolCallStatus::InProgress,
-        arguments: begin_event.invocation.arguments.unwrap_or(JsonValue::Null),
-        result: None,
-        error: None,
-        duration_ms: None,
-    };
-    ItemStartedNotification {
-        thread_id,
-        turn_id,
-        item,
-    }
-}
-
-/// similar to handle_mcp_tool_call_end in exec
-async fn construct_mcp_tool_call_end_notification(
-    end_event: McpToolCallEndEvent,
-    thread_id: String,
-    turn_id: String,
-) -> ItemCompletedNotification {
-    let status = if end_event.is_success() {
-        McpToolCallStatus::Completed
-    } else {
-        McpToolCallStatus::Failed
-    };
-    let duration_ms = i64::try_from(end_event.duration.as_millis()).ok();
-
-    let (result, error) = match &end_event.result {
-        Ok(value) => (
-            Some(McpToolCallResult {
-                content: value.content.clone(),
-                structured_content: value.structured_content.clone(),
-                meta: value.meta.clone(),
-            }),
-            None,
-        ),
-        Err(message) => (
-            None,
-            Some(McpToolCallError {
-                message: message.clone(),
-            }),
-        ),
-    };
-
-    let item = ThreadItem::McpToolCall {
-        id: end_event.call_id,
-        server: end_event.invocation.server,
-        tool: end_event.invocation.tool,
-        status,
-        arguments: end_event.invocation.arguments.unwrap_or(JsonValue::Null),
-        result,
-        error,
-        duration_ms,
-    };
-    ItemCompletedNotification {
-        thread_id,
-        turn_id,
-        item,
-    }
-}
-
 fn sanitize_agent_message_item(item: &mut ThreadItem) {
     let ThreadItem::AgentMessage { text, .. } = item else {
         return;
@@ -2258,11 +2146,13 @@ async fn maybe_handle_auto_loop(
 
         if let Err(err) = conversation
             .submit(Op::UserInput {
+                environments: None,
                 items: vec![UserInput::Text {
                     text: desired_message,
                     text_elements: Vec::new(),
                 }],
                 final_output_json_schema: None,
+                responsesapi_client_metadata: None,
             })
             .await
         {

@@ -279,21 +279,18 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
     Ok(())
 }
 
-pub(crate) fn apply_spawn_agent_profile_override(
+pub(crate) async fn apply_spawn_agent_profile_override(
     config: &mut Config,
-    profile: Option<&str>,
+    profile_name: &str,
 ) -> Result<(), String> {
-    let Some(profile_name) = profile else {
-        return Ok(());
-    };
-
     let merged_toml = config.config_layer_stack.effective_config();
     let Ok(merged_config) =
         crate::config::deserialize_config_toml_with_base(merged_toml, &config.codex_home)
     else {
         return Err("failed to deserialize config for profile override".to_string());
     };
-    let next_config = Config::load_config_with_layer_stack(
+    let next_config = Box::pin(Config::load_config_with_layer_stack(
+        codex_exec_server::LOCAL_FS.as_ref(),
         merged_config,
         crate::config::ConfigOverrides {
             config_profile: Some(profile_name.to_string()),
@@ -302,7 +299,8 @@ pub(crate) fn apply_spawn_agent_profile_override(
         },
         config.codex_home.clone(),
         config.config_layer_stack.clone(),
-    )
+    ))
+    .await
     .map_err(|err| format!("failed to apply spawn_agent profile override: {err}"))?;
     *config = next_config;
     Ok(())

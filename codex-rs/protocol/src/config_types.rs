@@ -701,7 +701,6 @@ mod tests {
         assert_eq!("\"priority\"", value);
     }
 
-
     #[test]
     fn tui_visible_collaboration_modes_match_mode_kind_visibility() {
         let expected = [ModeKind::Default, ModeKind::Plan];

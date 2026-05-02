@@ -680,8 +680,8 @@ auto_loop_rate_limit = 3
     assert_eq!(tui.auto_loop_rate_limit, Some(3));
 }
 
-#[test]
-fn runtime_config_respects_auto_loop_controls() -> std::io::Result<()> {
+#[tokio::test]
+async fn runtime_config_respects_auto_loop_controls() -> std::io::Result<()> {
     let toml = r#"
 [tui]
 auto_loop = true
@@ -693,8 +693,9 @@ auto_loop_rate_limit = 3
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        TempDir::new()?.path().to_path_buf(),
+        tempdir()?.abs(),
     )
+    .await
     .expect("load config");
 
     assert!(config.auto_loop);
