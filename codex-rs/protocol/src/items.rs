@@ -8,17 +8,25 @@ use crate::protocol::AgentReasoningEvent;
 use crate::protocol::AgentReasoningRawContentEvent;
 use crate::protocol::ContextCompactedEvent;
 use crate::protocol::EventMsg;
+use crate::protocol::FileChange;
 use crate::protocol::ImageGenerationEndEvent;
+use crate::protocol::PatchApplyBeginEvent;
+use crate::protocol::PatchApplyEndEvent;
+use crate::protocol::PatchApplyStatus;
 use crate::protocol::UserMessageEvent;
+use crate::protocol::ViewImageToolCallEvent;
 use crate::protocol::WebSearchEndEvent;
 use crate::user_input::ByteRange;
 use crate::user_input::TextElement;
 use crate::user_input::UserInput;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use quick_xml::de::from_str as from_xml_str;
 use quick_xml::se::to_string as to_xml_string;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use ts_rs::TS;
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
@@ -31,7 +39,9 @@ pub enum TurnItem {
     Plan(PlanItem),
     Reasoning(ReasoningItem),
     WebSearch(WebSearchItem),
+    ImageView(ImageViewItem),
     ImageGeneration(ImageGenerationItem),
+    FileChange(FileChangeItem),
     ContextCompaction(ContextCompactionItem),
 }
 
@@ -114,6 +124,12 @@ pub struct WebSearchItem {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
+pub struct ImageViewItem {
+    pub id: String,
+    pub path: AbsolutePathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
 pub struct ImageGenerationItem {
     pub id: String,
     pub status: String,
@@ -123,7 +139,25 @@ pub struct ImageGenerationItem {
     pub result: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub saved_path: Option<String>,
+    pub saved_path: Option<AbsolutePathBuf>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
+pub struct FileChangeItem {
+    pub id: String,
+    pub changes: HashMap<PathBuf, FileChange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub status: Option<PatchApplyStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub auto_approved: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub stdout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub stderr: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
@@ -265,7 +299,6 @@ pub fn build_hook_prompt_message(fragments: &[HookPromptFragment]) -> Option<Res
         id: Some(uuid::Uuid::new_v4().to_string()),
         role: "user".to_string(),
         content,
-        end_turn: None,
         phase: None,
     })
 }
@@ -381,6 +414,30 @@ impl ImageGenerationItem {
     }
 }
 
+impl FileChangeItem {
+    pub fn as_legacy_begin_event(&self, turn_id: String) -> EventMsg {
+        EventMsg::PatchApplyBegin(PatchApplyBeginEvent {
+            call_id: self.id.clone(),
+            turn_id,
+            auto_approved: self.auto_approved.unwrap_or(false),
+            changes: self.changes.clone(),
+        })
+    }
+
+    pub fn as_legacy_end_event(&self, turn_id: String) -> Option<EventMsg> {
+        let status = self.status.clone()?;
+        Some(EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+            call_id: self.id.clone(),
+            turn_id,
+            stdout: self.stdout.clone().unwrap_or_default(),
+            stderr: self.stderr.clone().unwrap_or_default(),
+            success: status == PatchApplyStatus::Completed,
+            changes: self.changes.clone(),
+            status,
+        }))
+    }
+}
+
 impl TurnItem {
     pub fn id(&self) -> String {
         match self {
@@ -390,7 +447,9 @@ impl TurnItem {
             TurnItem::Plan(item) => item.id.clone(),
             TurnItem::Reasoning(item) => item.id.clone(),
             TurnItem::WebSearch(item) => item.id.clone(),
+            TurnItem::ImageView(item) => item.id.clone(),
             TurnItem::ImageGeneration(item) => item.id.clone(),
+            TurnItem::FileChange(item) => item.id.clone(),
             TurnItem::ContextCompaction(item) => item.id.clone(),
         }
     }
@@ -402,7 +461,17 @@ impl TurnItem {
             TurnItem::AgentMessage(item) => item.as_legacy_events(),
             TurnItem::Plan(_) => Vec::new(),
             TurnItem::WebSearch(item) => vec![item.as_legacy_event()],
+            TurnItem::ImageView(item) => {
+                vec![EventMsg::ViewImageToolCall(ViewImageToolCallEvent {
+                    call_id: item.id.clone(),
+                    path: item.path.clone(),
+                })]
+            }
             TurnItem::ImageGeneration(item) => vec![item.as_legacy_event()],
+            TurnItem::FileChange(item) => item
+                .as_legacy_end_event(String::new())
+                .into_iter()
+                .collect(),
             TurnItem::Reasoning(item) => item.as_legacy_events(show_raw_agent_reasoning),
             TurnItem::ContextCompaction(item) => vec![item.as_legacy_event()],
         }

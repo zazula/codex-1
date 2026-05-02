@@ -166,7 +166,7 @@ async fn turn_start_shell_zsh_fork_executes_command_v2() -> Result<()> {
     assert!(command.contains("/bin/sh -c"));
     assert!(command.contains("sleep 0.01"));
     assert!(command.contains(&release_marker.display().to_string()));
-    assert_eq!(cwd, workspace);
+    assert_eq!(cwd.as_path(), workspace.as_path());
 
     mcp.interrupt_turn_and_wait_for_aborted(thread.id, turn.id, DEFAULT_READ_TIMEOUT)
         .await?;
@@ -536,7 +536,6 @@ async fn turn_start_shell_zsh_fork_subcommand_decline_marks_parent_declined_v2()
             approval_policy: Some(codex_app_server_protocol::AskForApproval::UnlessTrusted),
             sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::WorkspaceWrite {
                 writable_roots: vec![workspace.clone().try_into()?],
-                read_only_access: codex_app_server_protocol::ReadOnlyAccess::FullAccess,
                 network_access: false,
                 exclude_tmpdir_env_var: false,
                 exclude_slash_tmp: false,

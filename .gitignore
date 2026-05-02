@@ -52,6 +52,7 @@ yarn-error.log*
 # env
 .env*
 !.env.example
+.venv/
 
 # package
 *.tgz
@@ -94,4 +95,3 @@ __pycache__/
 
 # artifacts
 .rlm/
-

@@ -13,7 +13,8 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 
 use super::*;
-use crate::codex::make_session_and_context;
+use crate::context::ContextualUserFragment;
+use crate::session::tests::make_session_and_context;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::LocalShellAction;
 use codex_protocol::models::LocalShellExecAction;
@@ -63,7 +64,6 @@ async fn build_arc_monitor_request_includes_relevant_history_and_null_policies()
                 content: vec![ContentItem::InputText {
                     text: "first request".to_string(),
                 }],
-                end_turn: None,
                 phase: None,
             }],
             &turn_context,
@@ -71,11 +71,15 @@ async fn build_arc_monitor_request_includes_relevant_history_and_null_policies()
         .await;
     session
         .record_into_history(
-            &[
-                crate::contextual_user_message::ENVIRONMENT_CONTEXT_FRAGMENT.into_message(
-                    "<environment_context>\n<cwd>/tmp</cwd>\n</environment_context>".to_string(),
+            &[ContextualUserFragment::into(
+                crate::context::EnvironmentContext::new(
+                    Vec::new(),
+                    /*current_date*/ None,
+                    /*timezone*/ None,
+                    /*network*/ None,
+                    /*subagents*/ None,
                 ),
-            ],
+            )],
             &turn_context,
         )
         .await;
@@ -87,7 +91,6 @@ async fn build_arc_monitor_request_includes_relevant_history_and_null_policies()
                 content: vec![ContentItem::OutputText {
                     text: "commentary".to_string(),
                 }],
-                end_turn: None,
                 phase: Some(MessagePhase::Commentary),
             }],
             &turn_context,
@@ -101,7 +104,6 @@ async fn build_arc_monitor_request_includes_relevant_history_and_null_policies()
                 content: vec![ContentItem::OutputText {
                     text: "final response".to_string(),
                 }],
-                end_turn: None,
                 phase: Some(MessagePhase::FinalAnswer),
             }],
             &turn_context,
@@ -115,7 +117,6 @@ async fn build_arc_monitor_request_includes_relevant_history_and_null_policies()
                 content: vec![ContentItem::InputText {
                     text: "latest request".to_string(),
                 }],
-                end_turn: None,
                 phase: None,
             }],
             &turn_context,
@@ -270,7 +271,6 @@ async fn monitor_action_posts_expected_arc_request() {
                 content: vec![ContentItem::InputText {
                     text: "please run the tool".to_string(),
                 }],
-                end_turn: None,
                 phase: None,
             }],
             &turn_context,
@@ -351,7 +351,6 @@ async fn monitor_action_uses_env_url_and_token_overrides() {
                 content: vec![ContentItem::InputText {
                     text: "please run the tool".to_string(),
                 }],
-                end_turn: None,
                 phase: None,
             }],
             &turn_context,
@@ -421,7 +420,6 @@ async fn monitor_action_rejects_legacy_response_fields() {
                 content: vec![ContentItem::InputText {
                     text: "please run the tool".to_string(),
                 }],
-                end_turn: None,
                 phase: None,
             }],
             &turn_context,

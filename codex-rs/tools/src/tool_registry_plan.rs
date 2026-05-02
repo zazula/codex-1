@@ -1,32 +1,37 @@
 use crate::CommandToolOptions;
+use crate::REQUEST_PLUGIN_INSTALL_TOOL_NAME;
 use crate::REQUEST_USER_INPUT_TOOL_NAME;
+use crate::ResponsesApiNamespace;
+use crate::ResponsesApiNamespaceTool;
 use crate::ShellToolOptions;
 use crate::SpawnAgentToolOptions;
 use crate::TOOL_SEARCH_DEFAULT_LIMIT;
 use crate::TOOL_SEARCH_TOOL_NAME;
-use crate::TOOL_SUGGEST_TOOL_NAME;
 use crate::ToolHandlerKind;
+use crate::ToolName;
 use crate::ToolRegistryPlan;
 use crate::ToolRegistryPlanParams;
-use crate::ToolSearchAppSource;
+use crate::ToolSearchSource;
+use crate::ToolSearchSourceInfo;
 use crate::ToolSpec;
 use crate::ToolsConfig;
 use crate::ViewImageToolOptions;
 use crate::WebSearchToolOptions;
-use crate::collect_code_mode_tool_definitions;
-use crate::collect_tool_search_app_infos;
-use crate::collect_tool_suggest_entries;
+use crate::coalesce_loadable_tool_specs;
+use crate::collect_code_mode_exec_prompt_tool_definitions;
+use crate::collect_request_plugin_install_entries;
+use crate::collect_tool_search_source_infos;
 use crate::create_apply_patch_freeform_tool;
 use crate::create_apply_patch_json_tool;
 use crate::create_close_agent_tool_v1;
 use crate::create_close_agent_tool_v2;
 use crate::create_code_mode_tool;
 use crate::create_compact_context_tool;
+use crate::create_create_goal_tool;
 use crate::create_exec_command_tool;
 use crate::create_followup_task_tool;
+use crate::create_get_goal_tool;
 use crate::create_image_generation_tool;
-use crate::create_js_repl_reset_tool;
-use crate::create_js_repl_tool;
 use crate::create_list_agents_tool;
 use crate::create_list_dir_tool;
 use crate::create_list_mcp_resource_templates_tool;
@@ -35,6 +40,7 @@ use crate::create_local_shell_tool;
 use crate::create_read_mcp_resource_tool;
 use crate::create_report_agent_job_result_tool;
 use crate::create_request_permissions_tool;
+use crate::create_request_plugin_install_tool;
 use crate::create_request_user_input_tool;
 use crate::create_resume_agent_tool;
 use crate::create_send_input_tool_v1;
@@ -46,7 +52,7 @@ use crate::create_spawn_agent_tool_v2;
 use crate::create_spawn_agents_on_csv_tool;
 use crate::create_test_sync_tool;
 use crate::create_tool_search_tool;
-use crate::create_tool_suggest_tool;
+use crate::create_update_goal_tool;
 use crate::create_update_plan_tool;
 use crate::create_view_image_tool;
 use crate::create_wait_agent_tool_v1;
@@ -54,14 +60,14 @@ use crate::create_wait_agent_tool_v2;
 use crate::create_wait_tool;
 use crate::create_web_search_tool;
 use crate::create_write_stdin_tool;
-use crate::dynamic_tool_to_responses_api_tool;
+use crate::default_namespace_description;
+use crate::dynamic_tool_to_loadable_tool_spec;
 use crate::mcp_tool_to_responses_api_tool;
 use crate::request_permissions_tool_description;
 use crate::request_user_input_tool_description;
 use crate::tool_registry_plan_types::agent_type_description;
 use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
-use rmcp::model::Tool as McpTool;
 use std::collections::BTreeMap;
 
 pub fn build_tool_registry_plan(
@@ -76,9 +82,9 @@ pub fn build_tool_registry_plan(
             .tool_namespaces
             .into_iter()
             .flatten()
-            .map(|(name, detail)| {
+            .map(|(namespace, detail)| {
                 (
-                    name.clone(),
+                    namespace.clone(),
                     codex_code_mode::ToolNamespaceDescription {
                         name: detail.name.clone(),
                         description: detail.description.clone().unwrap_or_default(),
@@ -94,23 +100,23 @@ pub fn build_tool_registry_plan(
                 ..params
             },
         );
-        let mut enabled_tools = collect_code_mode_tool_definitions(
+        let mut enabled_tools = collect_code_mode_exec_prompt_tool_definitions(
             nested_plan
                 .specs
                 .iter()
                 .map(|configured_tool| &configured_tool.spec),
-        )
-        .into_iter()
-        .map(|tool| (tool.name, tool.description))
-        .collect::<Vec<_>>();
-        enabled_tools.sort_by(|(left_name, _), (right_name, _)| {
-            compare_code_mode_tool_names(left_name, right_name, &namespace_descriptions)
-        });
+        );
+        enabled_tools
+            .sort_by(|left, right| compare_code_mode_tools(left, right, &namespace_descriptions));
         plan.push_spec(
             create_code_mode_tool(
                 &enabled_tools,
                 &namespace_descriptions,
                 config.code_mode_only_enabled,
+                config.search_tool
+                    && params
+                        .deferred_mcp_tools
+                        .is_some_and(|tools| !tools.is_empty()),
             ),
             /*supports_parallel_tool_calls*/ false,
             config.code_mode_enabled,
@@ -213,25 +219,30 @@ pub fn build_tool_registry_plan(
         config.code_mode_enabled,
     );
     plan.register_handler("update_plan", ToolHandlerKind::Plan);
-
-    if config.has_environment && config.js_repl_enabled {
+    if config.goal_tools {
         plan.push_spec(
-            create_js_repl_tool(),
+            create_get_goal_tool(),
             /*supports_parallel_tool_calls*/ false,
             config.code_mode_enabled,
         );
+        plan.register_handler("get_goal", ToolHandlerKind::Goal);
         plan.push_spec(
-            create_js_repl_reset_tool(),
+            create_create_goal_tool(),
             /*supports_parallel_tool_calls*/ false,
             config.code_mode_enabled,
         );
-        plan.register_handler("js_repl", ToolHandlerKind::JsRepl);
-        plan.register_handler("js_repl_reset", ToolHandlerKind::JsReplReset);
+        plan.register_handler("create_goal", ToolHandlerKind::Goal);
+        plan.push_spec(
+            create_update_goal_tool(),
+            /*supports_parallel_tool_calls*/ false,
+            config.code_mode_enabled,
+        );
+        plan.register_handler("update_goal", ToolHandlerKind::Goal);
     }
 
     plan.push_spec(
         create_request_user_input_tool(request_user_input_tool_description(
-            config.default_mode_request_user_input,
+            &config.request_user_input_available_modes,
         )),
         /*supports_parallel_tool_calls*/ false,
         config.code_mode_enabled,
@@ -250,29 +261,50 @@ pub fn build_tool_registry_plan(
         plan.register_handler("request_permissions", ToolHandlerKind::RequestPermissions);
     }
 
+    let deferred_dynamic_tools = params
+        .dynamic_tools
+        .iter()
+        .filter(|tool| tool.defer_loading && (config.namespace_tools || tool.namespace.is_none()))
+        .collect::<Vec<_>>();
+    let deferred_mcp_tools_for_search = if config.namespace_tools {
+        params.deferred_mcp_tools
+    } else {
+        None
+    };
+
     if config.search_tool
-        && let Some(app_tools) = params.app_tools
+        && (deferred_mcp_tools_for_search.is_some() || !deferred_dynamic_tools.is_empty())
     {
-        let search_app_infos = collect_tool_search_app_infos(
-            app_tools.iter().map(|tool| ToolSearchAppSource {
-                server_name: tool.server_name,
-                connector_name: tool.connector_name,
-                connector_description: tool.connector_description,
-            }),
-            params.codex_apps_mcp_server_name,
-        );
+        let mut search_source_infos = deferred_mcp_tools_for_search
+            .map(|deferred_mcp_tools| {
+                collect_tool_search_source_infos(deferred_mcp_tools.iter().map(|tool| {
+                    ToolSearchSource {
+                        server_name: tool.server_name,
+                        connector_name: tool.connector_name,
+                        connector_description: tool.connector_description,
+                    }
+                }))
+            })
+            .unwrap_or_default();
+
+        if !deferred_dynamic_tools.is_empty() {
+            search_source_infos.push(ToolSearchSourceInfo {
+                name: "Dynamic tools".to_string(),
+                description: Some("Tools provided by the current Codex thread.".to_string()),
+            });
+        }
+
         plan.push_spec(
-            create_tool_search_tool(&search_app_infos, TOOL_SEARCH_DEFAULT_LIMIT),
+            create_tool_search_tool(&search_source_infos, TOOL_SEARCH_DEFAULT_LIMIT),
             /*supports_parallel_tool_calls*/ true,
             config.code_mode_enabled,
         );
         plan.register_handler(TOOL_SEARCH_TOOL_NAME, ToolHandlerKind::ToolSearch);
 
-        for tool in app_tools {
-            plan.register_handler(
-                format!("{}:{}", tool.tool_namespace, tool.tool_name),
-                ToolHandlerKind::Mcp,
-            );
+        if let Some(deferred_mcp_tools) = deferred_mcp_tools_for_search {
+            for tool in deferred_mcp_tools {
+                plan.register_handler(tool.name.clone(), ToolHandlerKind::Mcp);
+            }
         }
     }
 
@@ -281,11 +313,16 @@ pub fn build_tool_registry_plan(
             params.discoverable_tools.filter(|tools| !tools.is_empty())
     {
         plan.push_spec(
-            create_tool_suggest_tool(&collect_tool_suggest_entries(discoverable_tools)),
+            create_request_plugin_install_tool(&collect_request_plugin_install_entries(
+                discoverable_tools,
+            )),
             /*supports_parallel_tool_calls*/ true,
             /*code_mode_enabled*/ false,
         );
-        plan.register_handler(TOOL_SUGGEST_TOOL_NAME, ToolHandlerKind::ToolSuggest);
+        plan.register_handler(
+            REQUEST_PLUGIN_INSTALL_TOOL_NAME,
+            ToolHandlerKind::RequestPluginInstall,
+        );
     }
 
     if config.has_environment
@@ -386,6 +423,7 @@ pub fn build_tool_registry_plan(
                     hide_agent_type_model_reasoning: config.hide_spawn_agent_metadata,
                     include_usage_hint: config.spawn_agent_usage_hint,
                     usage_hint_text: config.spawn_agent_usage_hint_text.clone(),
+                    max_concurrent_threads_per_session: config.max_concurrent_threads_per_session,
                 }),
                 /*supports_parallel_tool_calls*/ false,
                 config.code_mode_enabled,
@@ -431,6 +469,7 @@ pub fn build_tool_registry_plan(
                     hide_agent_type_model_reasoning: config.hide_spawn_agent_metadata,
                     include_usage_hint: config.spawn_agent_usage_hint,
                     usage_hint_text: config.spawn_agent_usage_hint_text.clone(),
+                    max_concurrent_threads_per_session: config.max_concurrent_threads_per_session,
                 }),
                 /*supports_parallel_tool_calls*/ false,
                 config.code_mode_enabled,
@@ -481,40 +520,75 @@ pub fn build_tool_registry_plan(
     }
 
     if let Some(mcp_tools) = params.mcp_tools {
-        let mut entries: Vec<(String, &McpTool)> = mcp_tools
-            .iter()
-            .map(|(name, tool)| (name.clone(), tool))
-            .collect();
-        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut entries = mcp_tools.to_vec();
+        entries.sort_by_key(|tool| tool.name.display());
+        let mut namespace_entries = BTreeMap::new();
 
-        for (name, tool) in entries {
-            match mcp_tool_to_responses_api_tool(name.clone(), tool) {
-                Ok(converted_tool) => {
-                    plan.push_spec(
-                        ToolSpec::Function(converted_tool),
-                        /*supports_parallel_tool_calls*/ false,
-                        config.code_mode_enabled,
-                    );
-                    plan.register_handler(name, ToolHandlerKind::Mcp);
+        for tool in entries {
+            let Some(namespace) = tool.name.namespace.as_ref() else {
+                let tool_name = &tool.name;
+                tracing::error!("Skipping MCP tool `{tool_name}`: MCP tools must be namespaced");
+                continue;
+            };
+            namespace_entries
+                .entry(namespace.clone())
+                .or_insert_with(Vec::new)
+                .push(tool);
+        }
+
+        for (namespace, mut entries) in namespace_entries {
+            entries.sort_by_key(|tool| tool.name.name.clone());
+            let tool_namespace = params
+                .tool_namespaces
+                .and_then(|namespaces| namespaces.get(&namespace));
+            let description = tool_namespace
+                .and_then(|namespace| namespace.description.as_deref())
+                .map(str::trim)
+                .filter(|description| !description.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    let namespace_name = tool_namespace
+                        .map(|namespace| namespace.name.as_str())
+                        .unwrap_or(namespace.as_str());
+                    default_namespace_description(namespace_name)
+                });
+            let mut tools = Vec::new();
+            for tool in entries {
+                match mcp_tool_to_responses_api_tool(&tool.name, tool.tool) {
+                    Ok(converted_tool) => {
+                        tools.push(ResponsesApiNamespaceTool::Function(converted_tool));
+                        plan.register_handler(tool.name, ToolHandlerKind::Mcp);
+                    }
+                    Err(error) => {
+                        let tool_name = &tool.name;
+                        tracing::error!(
+                            "Failed to convert `{tool_name}` MCP tool to OpenAI tool: {error:?}"
+                        );
+                    }
                 }
-                Err(error) => {
-                    tracing::error!(
-                        "Failed to convert {name:?} MCP tool to OpenAI tool: {error:?}"
-                    );
-                }
+            }
+
+            if !tools.is_empty() {
+                plan.push_spec(
+                    ToolSpec::Namespace(ResponsesApiNamespace {
+                        name: namespace,
+                        description,
+                        tools,
+                    }),
+                    /*supports_parallel_tool_calls*/ false,
+                    config.code_mode_enabled,
+                );
             }
         }
     }
 
+    let mut dynamic_tool_specs = Vec::new();
     for tool in params.dynamic_tools {
-        match dynamic_tool_to_responses_api_tool(tool) {
-            Ok(converted_tool) => {
-                plan.push_spec(
-                    ToolSpec::Function(converted_tool),
-                    /*supports_parallel_tool_calls*/ false,
-                    config.code_mode_enabled,
-                );
-                plan.register_handler(tool.name.clone(), ToolHandlerKind::DynamicTool);
+        match dynamic_tool_to_loadable_tool_spec(tool) {
+            Ok(loadable_tool) => {
+                let handler_name = ToolName::new(tool.namespace.clone(), tool.name.clone());
+                dynamic_tool_specs.push(loadable_tool);
+                plan.register_handler(handler_name, ToolHandlerKind::DynamicTool);
             }
             Err(error) => {
                 tracing::error!(
@@ -524,43 +598,45 @@ pub fn build_tool_registry_plan(
             }
         }
     }
+    for spec in coalesce_loadable_tool_specs(dynamic_tool_specs) {
+        plan.push_spec(
+            spec.into(),
+            /*supports_parallel_tool_calls*/ false,
+            config.code_mode_enabled,
+        );
+    }
+
+    if !config.namespace_tools {
+        plan.specs
+            .retain(|configured_tool| !matches!(&configured_tool.spec, ToolSpec::Namespace(_)));
+    }
 
     plan
 }
 
-fn compare_code_mode_tool_names(
-    left_name: &str,
-    right_name: &str,
+fn compare_code_mode_tools(
+    left: &codex_code_mode::ToolDefinition,
+    right: &codex_code_mode::ToolDefinition,
     namespace_descriptions: &BTreeMap<String, codex_code_mode::ToolNamespaceDescription>,
 ) -> std::cmp::Ordering {
-    let left_namespace = code_mode_namespace_name(left_name, namespace_descriptions);
-    let right_namespace = code_mode_namespace_name(right_name, namespace_descriptions);
+    let left_namespace = code_mode_namespace_name(left, namespace_descriptions);
+    let right_namespace = code_mode_namespace_name(right, namespace_descriptions);
 
     left_namespace
         .cmp(&right_namespace)
-        .then_with(|| {
-            code_mode_function_name(left_name, left_namespace)
-                .cmp(code_mode_function_name(right_name, right_namespace))
-        })
-        .then_with(|| left_name.cmp(right_name))
+        .then_with(|| left.tool_name.name.cmp(&right.tool_name.name))
+        .then_with(|| left.name.cmp(&right.name))
 }
 
 fn code_mode_namespace_name<'a>(
-    name: &str,
+    tool: &codex_code_mode::ToolDefinition,
     namespace_descriptions: &'a BTreeMap<String, codex_code_mode::ToolNamespaceDescription>,
 ) -> Option<&'a str> {
-    namespace_descriptions
-        .get(name)
+    tool.tool_name
+        .namespace
+        .as_ref()
+        .and_then(|namespace| namespace_descriptions.get(namespace))
         .map(|namespace_description| namespace_description.name.as_str())
-}
-
-fn code_mode_function_name<'a>(name: &'a str, namespace: Option<&str>) -> &'a str {
-    namespace
-        .and_then(|namespace| {
-            name.strip_prefix(namespace)
-                .and_then(|suffix| suffix.strip_prefix("__"))
-        })
-        .unwrap_or(name)
 }
 
 #[cfg(test)]

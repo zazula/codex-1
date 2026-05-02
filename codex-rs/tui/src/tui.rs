@@ -14,16 +14,15 @@ use std::time::Duration;
 
 use crossterm::Command;
 use crossterm::SynchronizedUpdate;
+use crossterm::cursor::SetCursorStyle;
 use crossterm::event::DisableBracketedPaste;
 use crossterm::event::DisableFocusChange;
 use crossterm::event::EnableBracketedPaste;
 use crossterm::event::EnableFocusChange;
 use crossterm::event::KeyEvent;
-use crossterm::event::KeyboardEnhancementFlags;
-use crossterm::event::PopKeyboardEnhancementFlags;
-use crossterm::event::PushKeyboardEnhancementFlags;
 use crossterm::terminal::EnterAlternateScreen;
 use crossterm::terminal::LeaveAlternateScreen;
+#[cfg(not(unix))]
 use crossterm::terminal::supports_keyboard_enhancement;
 use ratatui::backend::Backend;
 use ratatui::backend::CrosstermBackend;
@@ -31,6 +30,7 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::disable_raw_mode;
 use ratatui::crossterm::terminal::enable_raw_mode;
 use ratatui::layout::Offset;
+use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::layout::Size;
 use ratatui::text::Line;
@@ -54,12 +54,17 @@ mod frame_rate_limiter;
 mod frame_requester;
 #[cfg(unix)]
 mod job_control;
+mod keyboard_modes;
 
 /// Target frame interval for UI redraw scheduling.
 pub(crate) const TARGET_FRAME_INTERVAL: Duration = frame_rate_limiter::MIN_FRAME_INTERVAL;
 
 /// A type alias for the terminal type used in this application
 pub type Terminal = CustomTerminal<CrosstermBackend<Stdout>>;
+
+pub(crate) fn running_in_vscode_terminal() -> bool {
+    keyboard_modes::running_in_vscode_terminal()
+}
 
 fn should_emit_notification(condition: NotificationCondition, terminal_focused: bool) -> bool {
     match condition {
@@ -108,14 +113,7 @@ pub fn set_modes() -> Result<()> {
     // Some terminals (notably legacy Windows consoles) do not support
     // keyboard enhancement flags. Attempt to enable them, but continue
     // gracefully if unsupported.
-    let _ = execute!(
-        stdout(),
-        PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-        )
-    );
+    keyboard_modes::enable_keyboard_enhancement();
 
     let _ = execute!(stdout(), EnableFocusChange);
     Ok(())
@@ -163,29 +161,64 @@ impl Command for DisableAlternateScroll {
     }
 }
 
-fn restore_common(should_disable_raw_mode: bool) -> Result<()> {
-    // Pop may fail on platforms that didn't support the push; ignore errors.
-    let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
-    execute!(stdout(), DisableBracketedPaste)?;
-    let _ = execute!(stdout(), DisableFocusChange);
-    if should_disable_raw_mode {
-        disable_raw_mode()?;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RawModeRestore {
+    Disable,
+    Keep,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyboardRestore {
+    PopStack,
+    ResetAfterExit,
+}
+
+fn restore_common(
+    raw_mode_restore: RawModeRestore,
+    keyboard_restore: KeyboardRestore,
+) -> Result<()> {
+    match keyboard_restore {
+        KeyboardRestore::PopStack => keyboard_modes::restore_keyboard_enhancement_stack(),
+        KeyboardRestore::ResetAfterExit => keyboard_modes::reset_keyboard_reporting_after_exit(),
     }
-    let _ = execute!(stdout(), crossterm::cursor::Show);
-    Ok(())
+
+    let mut first_error = execute!(stdout(), DisableBracketedPaste).err();
+    let _ = execute!(stdout(), DisableFocusChange);
+    if matches!(raw_mode_restore, RawModeRestore::Disable)
+        && let Err(err) = disable_raw_mode()
+    {
+        first_error.get_or_insert(err);
+    }
+    if let Err(err) = execute!(
+        stdout(),
+        SetCursorStyle::DefaultUserShape,
+        crossterm::cursor::Show
+    ) {
+        first_error.get_or_insert(err);
+    }
+    match first_error {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 /// Restore the terminal to its original state.
 /// Inverse of `set_modes`.
 pub fn restore() -> Result<()> {
-    let should_disable_raw_mode = true;
-    restore_common(should_disable_raw_mode)
+    restore_common(RawModeRestore::Disable, KeyboardRestore::PopStack)
+}
+
+/// Restore the terminal after Codex is exiting.
+///
+/// Uses a stronger keyboard reset than [`restore`] so the parent shell recovers even if a
+/// terminal missed the stack pop that normally pairs with [`set_modes`].
+pub fn restore_after_exit() -> Result<()> {
+    restore_common(RawModeRestore::Disable, KeyboardRestore::ResetAfterExit)
 }
 
 /// Restore the terminal to its original state, but keep raw mode enabled.
 pub fn restore_keep_raw() -> Result<()> {
-    let should_disable_raw_mode = false;
-    restore_common(should_disable_raw_mode)
+    restore_common(RawModeRestore::Keep, KeyboardRestore::PopStack)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,23 +290,77 @@ pub fn init() -> Result<Terminal> {
 
     set_panic_hook();
 
+    #[cfg(unix)]
     let backend = CrosstermBackend::new(stdout());
-    let tui = CustomTerminal::with_options(backend)?;
+
+    #[cfg(unix)]
+    let cursor_pos =
+        match crate::terminal_probe::cursor_position(crate::terminal_probe::DEFAULT_TIMEOUT) {
+            Ok(Some(pos)) => pos,
+            Ok(None) => {
+                tracing::warn!("initial cursor position probe timed out; defaulting to origin");
+                Position { x: 0, y: 0 }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "failed to read initial cursor position; defaulting to origin: {err}"
+                );
+                Position { x: 0, y: 0 }
+            }
+        };
+
+    #[cfg(not(unix))]
+    let mut backend = CrosstermBackend::new(stdout());
+
+    #[cfg(not(unix))]
+    let cursor_pos = cursor_position_with_crossterm(&mut backend);
+
+    let tui = CustomTerminal::with_options_and_cursor_position(backend, cursor_pos)?;
     Ok(tui)
+}
+
+#[cfg(not(unix))]
+fn cursor_position_with_crossterm(backend: &mut CrosstermBackend<Stdout>) -> Position {
+    backend.get_cursor_position().unwrap_or_else(|err| {
+        tracing::warn!("failed to read initial cursor position; defaulting to origin: {err}");
+        Position { x: 0, y: 0 }
+    })
+}
+
+#[cfg(unix)]
+fn detect_keyboard_enhancement_supported() -> bool {
+    crate::terminal_probe::keyboard_enhancement_supported(crate::terminal_probe::DEFAULT_TIMEOUT)
+        .unwrap_or(/*default*/ None)
+        .unwrap_or(/*default*/ false)
+}
+
+#[cfg(not(unix))]
+fn detect_keyboard_enhancement_supported() -> bool {
+    // Non-Unix startup keeps the existing crossterm path because the bounded probe implementation
+    // relies on Unix file descriptors and `/dev/tty` semantics.
+    supports_keyboard_enhancement().unwrap_or(/*default*/ false)
 }
 
 fn set_panic_hook() {
     let hook = panic::take_hook();
     panic::set_hook(Box::new(move |panic_info| {
-        let _ = restore(); // ignore any errors as we are already failing
+        let _ = restore_after_exit(); // ignore any errors as we are already failing
         hook(panic_info);
     }));
 }
 
 #[derive(Clone, Debug)]
 pub enum TuiEvent {
+    /// A terminal key event after focus, paste, and protocol bookkeeping has been handled.
     Key(KeyEvent),
+    /// A bracketed paste payload normalized by the app layer before it reaches the composer.
     Paste(String),
+    /// A terminal size notification that should be handled as resize-sensitive draw work.
+    ///
+    /// Resize is separate from `Draw` so the app can run feature-gated pre-render logic without
+    /// changing the default draw path for scheduled frames.
+    Resize,
+    /// A scheduled repaint that does not necessarily correspond to a terminal size change.
     Draw,
 }
 
@@ -305,7 +392,8 @@ impl Tui {
 
         // Detect keyboard enhancement support before any EventStream is created so the
         // crossterm poller can acquire its lock without contention.
-        let enhanced_keys_supported = supports_keyboard_enhancement().unwrap_or(false);
+        let enhanced_keys_supported = !keyboard_modes::keyboard_enhancement_disabled()
+            && detect_keyboard_enhancement_supported();
         // Cache this to avoid contention with the event reader.
         supports_color::on_cached(supports_color::Stream::Stdout);
         let _ = crate::terminal_palette::default_colors();
@@ -557,6 +645,54 @@ impl Tui {
         Ok(())
     }
 
+    /// Resize the inline viewport for the resize-reflow path.
+    ///
+    /// Unlike the legacy draw path, this path does not scroll rows above the viewport when the
+    /// terminal shrinks. Resize reflow owns rebuilding those rows from transcript source, so
+    /// scrolling here would move the viewport once and then replay history into the wrong row.
+    fn update_inline_viewport_for_resize_reflow(
+        terminal: &mut Terminal,
+        height: u16,
+        is_zellij: bool,
+    ) -> Result<bool> {
+        let size = terminal.size()?;
+        let terminal_height_shrank = size.height < terminal.last_known_screen_size.height;
+        let terminal_height_grew = size.height > terminal.last_known_screen_size.height;
+        let viewport_was_bottom_aligned =
+            terminal.viewport_area.bottom() == terminal.last_known_screen_size.height;
+        let previous_area = terminal.viewport_area;
+
+        let mut area = terminal.viewport_area;
+        area.height = height.min(size.height);
+        area.width = size.width;
+        let mut needs_full_repaint = false;
+
+        if area.bottom() > size.height {
+            let scroll_by = area.bottom() - size.height;
+            if !terminal_height_shrank {
+                if is_zellij {
+                    Self::scroll_zellij_expanded_viewport(terminal, size, scroll_by)?;
+                } else {
+                    terminal
+                        .backend_mut()
+                        .scroll_region_up(0..area.top(), scroll_by)?;
+                }
+            }
+            area.y = size.height - area.height;
+        } else if terminal_height_grew && viewport_was_bottom_aligned {
+            area.y = size.height - area.height;
+        }
+
+        if area != terminal.viewport_area {
+            let clear_position = Position::new(/*x*/ 0, previous_area.y.min(area.y));
+            terminal.set_viewport_area(area);
+            terminal.clear_after_position(clear_position)?;
+            needs_full_repaint = true;
+        }
+
+        Ok(needs_full_repaint)
+    }
+
     /// Write any buffered history lines above the viewport and clear the buffer.
     /// Returns `true` when Zellij mode was used, signaling that the caller must
     /// invalidate the diff buffer for a full repaint.
@@ -613,6 +749,63 @@ impl Tui {
                 &mut self.pending_history_lines,
                 self.is_zellij,
             )?;
+
+            if needs_full_repaint {
+                terminal.invalidate_viewport();
+            }
+
+            // Update the y position for suspending so Ctrl-Z can place the cursor correctly.
+            #[cfg(unix)]
+            {
+                let area = terminal.viewport_area;
+                let inline_area_bottom = if self.alt_screen_active.load(Ordering::Relaxed) {
+                    self.alt_saved_viewport
+                        .map(|r| r.bottom().saturating_sub(1))
+                        .unwrap_or_else(|| area.bottom().saturating_sub(1))
+                } else {
+                    area.bottom().saturating_sub(1)
+                };
+                self.suspend_context.set_cursor_y(inline_area_bottom);
+            }
+
+            terminal.draw(|frame| {
+                draw_fn(frame);
+            })
+        })?
+    }
+
+    /// Draw a frame using the resize-reflow viewport and history insertion rules.
+    ///
+    /// This is the feature-gated counterpart to `draw`. It intentionally skips
+    /// `pending_viewport_area`, whose cursor-position heuristic is part of the legacy path, and
+    /// instead lets transcript reflow rebuild scrollback before the frame is rendered.
+    pub fn draw_with_resize_reflow(
+        &mut self,
+        height: u16,
+        draw_fn: impl FnOnce(&mut custom_terminal::Frame),
+    ) -> Result<()> {
+        // If we are resuming from ^Z, we need to prepare the resume action now so we can apply it
+        // in the synchronized update.
+        #[cfg(unix)]
+        let mut prepared_resume = self
+            .suspend_context
+            .prepare_resume_action(&mut self.terminal, &mut self.alt_saved_viewport);
+
+        stdout().sync_update(|_| {
+            #[cfg(unix)]
+            if let Some(prepared) = prepared_resume.take() {
+                prepared.apply(&mut self.terminal)?;
+            }
+
+            let terminal = &mut self.terminal;
+            let mut needs_full_repaint =
+                Self::update_inline_viewport_for_resize_reflow(terminal, height, self.is_zellij)?;
+            let flushed_history = Self::flush_pending_history_lines(
+                terminal,
+                &mut self.pending_history_lines,
+                self.is_zellij,
+            )?;
+            needs_full_repaint |= flushed_history;
 
             if needs_full_repaint {
                 terminal.invalidate_viewport();

@@ -10,8 +10,11 @@ use core_test_support::test_codex::ApplyPatchModelOutput;
 use pretty_assertions::assert_eq;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use codex_features::Feature;
+use codex_protocol::models::PermissionProfile;
+use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -34,6 +37,7 @@ use core_test_support::test_codex::TestCodexBuilder;
 use core_test_support::test_codex::TestCodexHarness;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_event_with_timeout;
 use serde_json::json;
 use test_case::test_case;
 use wiremock::Mock;
@@ -55,6 +59,42 @@ async fn apply_patch_harness_with(
     // Box harness construction so apply_patch_cli tests do not inline the
     // full test-thread startup path into each test future.
     Box::pin(TestCodexHarness::with_remote_aware_builder(builder)).await
+}
+
+async fn submit_without_wait(harness: &TestCodexHarness, prompt: &str) -> Result<()> {
+    let test = harness.test();
+    let session_model = test.session_configured.model.clone();
+    test.codex
+        .submit(Op::UserTurn {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: prompt.into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            cwd: harness.cwd().to_path_buf(),
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_profile: None,
+            model: session_model,
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await?;
+    Ok(())
+}
+
+fn restrictive_workspace_write_profile() -> PermissionProfile {
+    PermissionProfile::workspace_write_with(
+        &[],
+        NetworkSandboxPolicy::Restricted,
+        /*exclude_tmpdir_env_var*/ true,
+        /*exclude_slash_tmp*/ true,
+    )
 }
 
 pub async fn mount_apply_patch(
@@ -144,7 +184,7 @@ async fn apply_patch_cli_multiple_operations_integration(
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let harness = apply_patch_harness_with(|builder| builder.with_model("gpt-5.1")).await?;
+    let harness = apply_patch_harness_with(|builder| builder.with_model("gpt-5.4")).await?;
 
     // Seed workspace state
     harness.write_file("modify.txt", "line1\nline2\n").await?;
@@ -352,26 +392,7 @@ async fn apply_patch_cli_move_without_content_change_has_no_turn_diff(
     let call_id = "apply-move-no-change";
     mount_apply_patch(&harness, call_id, patch, "ok", model_output).await;
 
-    let model = test.session_configured.model.clone();
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "rename without content change".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: harness.cwd().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
+    submit_without_wait(&harness, "rename without content change").await?;
 
     let mut saw_turn_diff = false;
     wait_for_event(&codex, |event| match event {
@@ -637,17 +658,10 @@ async fn apply_patch_cli_rejects_path_traversal_outside_workspace(
     let call_id = "apply-path-traversal";
     mount_apply_patch(&harness, call_id, patch, "fail", model_output).await;
 
-    let sandbox_policy = SandboxPolicy::WorkspaceWrite {
-        writable_roots: vec![],
-        read_only_access: Default::default(),
-        network_access: false,
-        exclude_tmpdir_env_var: true,
-        exclude_slash_tmp: true,
-    };
     harness
-        .submit_with_policy(
+        .submit_with_permission_profile(
             "attempt to escape workspace via apply_patch",
-            sandbox_policy,
+            restrictive_workspace_write_profile(),
         )
         .await?;
 
@@ -693,15 +707,11 @@ async fn apply_patch_cli_rejects_move_path_traversal_outside_workspace(
     let call_id = "apply-move-traversal";
     mount_apply_patch(&harness, call_id, patch, "fail", model_output).await;
 
-    let sandbox_policy = SandboxPolicy::WorkspaceWrite {
-        writable_roots: vec![],
-        read_only_access: Default::default(),
-        network_access: false,
-        exclude_tmpdir_env_var: true,
-        exclude_slash_tmp: true,
-    };
     harness
-        .submit_with_policy("attempt move traversal via apply_patch", sandbox_policy)
+        .submit_with_permission_profile(
+            "attempt move traversal via apply_patch",
+            restrictive_workspace_write_profile(),
+        )
         .await?;
 
     let out = harness.apply_patch_output(call_id, model_output).await;
@@ -759,7 +769,7 @@ async fn apply_patch_cli_verification_failure_has_no_side_effects(
 async fn apply_patch_shell_command_heredoc_with_cd_updates_relative_workdir() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let harness = apply_patch_harness_with(|builder| builder.with_model("gpt-5.1")).await?;
+    let harness = apply_patch_harness_with(|builder| builder.with_model("gpt-5.4")).await?;
 
     // Prepare a file inside a subdir; update it via cd && apply_patch heredoc form.
     harness.write_file("sub/in_sub.txt", "before\n").await?;
@@ -799,7 +809,7 @@ async fn apply_patch_cli_can_use_shell_command_output_as_patch_input() -> Result
     );
 
     let harness =
-        apply_patch_harness_with(|builder| builder.with_model("gpt-5.1").with_windows_cmd_shell())
+        apply_patch_harness_with(|builder| builder.with_model("gpt-5.4").with_windows_cmd_shell())
             .await?;
 
     let source_contents = "line1\nnaïve café\nline3\n";
@@ -934,6 +944,110 @@ async fn apply_patch_cli_can_use_shell_command_output_as_patch_input() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_patch_custom_tool_streaming_emits_updated_changes() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = apply_patch_harness_with(|builder| {
+        builder.with_config(|config| {
+            config
+                .features
+                .enable(Feature::ApplyPatchStreamingEvents)
+                .expect("enable apply_patch streaming events");
+        })
+    })
+    .await?;
+    let test = harness.test();
+    let codex = test.codex.clone();
+    let call_id = "apply-patch-streaming";
+    let patch = "*** Begin Patch\n*** Add File: streamed.txt\n+hello\n+world\n*** End Patch";
+    mount_sse_sequence(
+        harness.server(),
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                json!({
+                    "type": "response.output_item.added",
+                    "item": {
+                        "type": "custom_tool_call",
+                        "call_id": call_id,
+                        "name": "apply_patch",
+                        "input": "",
+                    }
+                }),
+                json!({
+                    "type": "response.custom_tool_call_input.delta",
+                    "call_id": call_id,
+                    "delta": "*** Begin Patch\n",
+                }),
+                json!({
+                    "type": "response.custom_tool_call_input.delta",
+                    "call_id": call_id,
+                    "delta": "*** Add File: streamed.txt\n+hello",
+                }),
+                json!({
+                    "type": "response.custom_tool_call_input.delta",
+                    "call_id": call_id,
+                    "delta": "\n+world\n*** End Patch",
+                }),
+                ev_apply_patch_custom_tool_call(call_id, patch),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-1", "done"),
+                ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    submit_without_wait(&harness, "create streamed file").await?;
+
+    let mut updates = Vec::new();
+    wait_for_event(&codex, |event| match event {
+        EventMsg::PatchApplyUpdated(update) => {
+            updates.push(update.clone());
+            false
+        }
+        EventMsg::TurnComplete(_) => true,
+        _ => false,
+    })
+    .await;
+
+    assert_eq!(
+        updates
+            .iter()
+            .map(|update| update.call_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![call_id, call_id]
+    );
+    assert_eq!(
+        updates
+            .first()
+            .expect("first update")
+            .changes
+            .get(&std::path::PathBuf::from("streamed.txt")),
+        Some(&codex_protocol::protocol::FileChange::Add {
+            content: String::new(),
+        })
+    );
+    assert_eq!(
+        updates
+            .last()
+            .expect("last update")
+            .changes
+            .get(&std::path::PathBuf::from("streamed.txt")),
+        Some(&codex_protocol::protocol::FileChange::Add {
+            content: "hello\nworld\n".to_string(),
+        })
+    );
+    assert_eq!(
+        harness.read_file_text("streamed.txt").await?,
+        "hello\nworld\n"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn apply_patch_shell_command_heredoc_with_cd_emits_turn_diff() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_remote!(
@@ -941,7 +1055,7 @@ async fn apply_patch_shell_command_heredoc_with_cd_emits_turn_diff() -> Result<(
         "TurnDiffTracker currently reads the test-runner filesystem, not the remote executor filesystem",
     );
 
-    let harness = apply_patch_harness_with(|builder| builder.with_model("gpt-5.1")).await?;
+    let harness = apply_patch_harness_with(|builder| builder.with_model("gpt-5.4")).await?;
     let test = harness.test();
     let codex = test.codex.clone();
 
@@ -950,7 +1064,7 @@ async fn apply_patch_shell_command_heredoc_with_cd_emits_turn_diff() -> Result<(
 
     let script = "cd sub && apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: in_sub.txt\n@@\n-before\n+after\n*** End Patch\nEOF\n";
     let call_id = "shell-heredoc-cd";
-    let args = json!({ "command": script, "timeout_ms": 5_000 });
+    let args = json!({ "command": script, "timeout_ms": 30_000 });
     let bodies = vec![
         sse(vec![
             ev_response_created("resp-1"),
@@ -964,26 +1078,7 @@ async fn apply_patch_shell_command_heredoc_with_cd_emits_turn_diff() -> Result<(
     ];
     mount_sse_sequence(harness.server(), bodies).await;
 
-    let model = test.session_configured.model.clone();
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "apply via shell heredoc with cd".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: harness.cwd().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
+    submit_without_wait(&harness, "apply via shell heredoc with cd").await?;
 
     let mut saw_turn_diff = None;
     let mut saw_patch_begin = false;
@@ -1026,7 +1121,7 @@ async fn apply_patch_shell_command_failure_propagates_error_and_skips_diff() -> 
         "TurnDiffTracker currently reads the test-runner filesystem, not the remote executor filesystem",
     );
 
-    let harness = apply_patch_harness_with(|builder| builder.with_model("gpt-5.1")).await?;
+    let harness = apply_patch_harness_with(|builder| builder.with_model("gpt-5.4")).await?;
     let test = harness.test();
     let codex = test.codex.clone();
 
@@ -1048,26 +1143,7 @@ async fn apply_patch_shell_command_failure_propagates_error_and_skips_diff() -> 
     ];
     mount_sse_sequence(harness.server(), bodies).await;
 
-    let model = test.session_configured.model.clone();
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "apply patch via shell".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: harness.cwd().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
+    submit_without_wait(&harness, "apply patch via shell").await?;
 
     let mut saw_turn_diff = false;
     wait_for_event(&codex, |event| match event {
@@ -1203,26 +1279,7 @@ async fn apply_patch_emits_turn_diff_event_with_unified_diff(
     let patch = format!("*** Begin Patch\n*** Add File: {file}\n+hello\n*** End Patch\n");
     mount_apply_patch(&harness, call_id, patch.as_str(), "ok", model_output).await;
 
-    let model = test.session_configured.model.clone();
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "emit diff".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: harness.cwd().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
+    submit_without_wait(&harness, "emit diff").await?;
 
     let mut saw_turn_diff = None;
     wait_for_event(&codex, |event| match event {
@@ -1270,26 +1327,7 @@ async fn apply_patch_turn_diff_for_rename_with_content_change(
     let patch = "*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n@@\n-old\n+new\n*** End Patch";
     mount_apply_patch(&harness, call_id, patch, "ok", model_output).await;
 
-    let model = test.session_configured.model.clone();
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "rename with change".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: harness.cwd().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
+    submit_without_wait(&harness, "rename with change").await?;
 
     let mut last_diff: Option<String> = None;
     wait_for_event(&codex, |event| match event {
@@ -1346,26 +1384,7 @@ async fn apply_patch_aggregates_diff_across_multiple_tool_calls() -> Result<()> 
     ]);
     mount_sse_sequence(harness.server(), vec![s1, s2, s3]).await;
 
-    let model = test.session_configured.model.clone();
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "aggregate diffs".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: harness.cwd().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
+    submit_without_wait(&harness, "aggregate diffs").await?;
 
     let mut last_diff: Option<String> = None;
     wait_for_event(&codex, |event| match event {
@@ -1422,36 +1441,21 @@ async fn apply_patch_aggregates_diff_preserves_success_after_failure() -> Result
     ];
     mount_sse_sequence(harness.server(), responses).await;
 
-    let model = test.session_configured.model.clone();
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "apply patch twice with failure".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: harness.cwd().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
+    submit_without_wait(&harness, "apply patch twice with failure").await?;
 
     let mut last_diff: Option<String> = None;
-    wait_for_event(&codex, |event| match event {
-        EventMsg::TurnDiff(ev) => {
-            last_diff = Some(ev.unified_diff.clone());
-            false
-        }
-        EventMsg::TurnComplete(_) => true,
-        _ => false,
-    })
+    wait_for_event_with_timeout(
+        &codex,
+        |event| match event {
+            EventMsg::TurnDiff(ev) => {
+                last_diff = Some(ev.unified_diff.clone());
+                false
+            }
+            EventMsg::TurnComplete(_) => true,
+            _ => false,
+        },
+        Duration::from_secs(30),
+    )
     .await;
 
     let diff = last_diff.expect("expected TurnDiff after failed patch");

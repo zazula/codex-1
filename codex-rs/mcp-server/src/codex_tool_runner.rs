@@ -76,7 +76,7 @@ pub async fn run_codex_tool_session(
         thread_id,
         thread,
         session_configured,
-    } = match thread_manager.start_thread(config).await {
+    } = match thread_manager.start_thread(config.clone()).await {
         Ok(res) => res,
         Err(e) => {
             let result = CallToolResult {
@@ -116,12 +116,14 @@ pub async fn run_codex_tool_session(
     let submission = Submission {
         id: sub_id.clone(),
         op: Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: initial_prompt.clone(),
                 // MCP tool prompts are plain text with no UI element ranges.
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         },
         trace: None,
     };
@@ -163,12 +165,14 @@ pub async fn run_codex_tool_session_reply(
         .insert(request_id.clone(), thread_id);
     if let Err(e) = thread
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: prompt,
                 // MCP tool prompts are plain text with no UI element ranges.
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
     {
@@ -244,7 +248,7 @@ async fn run_codex_tool_session_inner(
                         } = ev;
                         handle_exec_approval_request(
                             command,
-                            cwd,
+                            cwd.to_path_buf(),
                             outgoing.clone(),
                             thread.clone(),
                             request_id.clone(),
@@ -271,7 +275,9 @@ async fn run_codex_tool_session_inner(
                         outgoing.send_response(request_id.clone(), result).await;
                         break;
                     }
-                    EventMsg::Warning(_) => {
+                    EventMsg::Warning(_)
+                    | EventMsg::GuardianWarning(_)
+                    | EventMsg::ModelVerification(_) => {
                         continue;
                     }
                     EventMsg::GuardianAssessment(_) => {
@@ -353,11 +359,13 @@ async fn run_codex_tool_session_inner(
 
                             if let Err(err) = thread
                                 .submit(Op::UserInput {
+                                    environments: None,
                                     items: vec![UserInput::Text {
                                         text: followup,
                                         text_elements: Vec::new(),
                                     }],
                                     final_output_json_schema: None,
+                                    responsesapi_client_metadata: None,
                                 })
                                 .await
                             {
@@ -396,11 +404,8 @@ async fn run_codex_tool_session_inner(
                     EventMsg::ThreadNameUpdated(_) => {
                         // Ignore session metadata updates in MCP tool runner.
                     }
-                    EventMsg::AgentMessageDelta(_) => {
-                        // TODO: think how we want to support this in the MCP
-                    }
-                    EventMsg::AgentReasoningDelta(_) => {
-                        // TODO: think how we want to support this in the MCP
+                    EventMsg::ThreadGoalUpdated(_) => {
+                        // Ignore thread goal metadata updates in MCP tool runner.
                     }
                     EventMsg::McpStartupUpdate(_) | EventMsg::McpStartupComplete(_) => {
                         // Ignored in MCP tool runner.
@@ -409,7 +414,6 @@ async fn run_codex_tool_session_inner(
                         // TODO: think how we want to support this in the MCP
                     }
                     EventMsg::AgentReasoningRawContent(_)
-                    | EventMsg::AgentReasoningRawContentDelta(_)
                     | EventMsg::TurnStarted(_)
                     | EventMsg::TokenCount(_)
                     | EventMsg::AgentReasoning(_)
@@ -423,9 +427,9 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::TerminalInteraction(_)
                     | EventMsg::ExecCommandOutputDelta(_)
                     | EventMsg::ExecCommandEnd(_)
-                    | EventMsg::BackgroundEvent(_)
                     | EventMsg::StreamError(_)
                     | EventMsg::PatchApplyBegin(_)
+                    | EventMsg::PatchApplyUpdated(_)
                     | EventMsg::PatchApplyEnd(_)
                     | EventMsg::TurnDiff(_)
                     | EventMsg::WebSearchBegin(_)
@@ -435,9 +439,9 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::TurnAborted(_)
                     | EventMsg::UserMessage(_)
                     | EventMsg::ShutdownComplete
-                    | EventMsg::ViewImageToolCall(_)
                     | EventMsg::ImageGenerationBegin(_)
                     | EventMsg::ImageGenerationEnd(_)
+                    | EventMsg::ViewImageToolCall(_)
                     | EventMsg::RawResponseItem(_)
                     | EventMsg::EnteredReviewMode(_)
                     | EventMsg::ItemStarted(_)
@@ -448,8 +452,6 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::ReasoningContentDelta(_)
                     | EventMsg::ReasoningRawContentDelta(_)
                     | EventMsg::SkillsUpdateAvailable
-                    | EventMsg::UndoStarted(_)
-                    | EventMsg::UndoCompleted(_)
                     | EventMsg::ExitedReviewMode(_)
                     | EventMsg::RequestUserInput(_)
                     | EventMsg::RequestPermissions(_)

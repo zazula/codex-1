@@ -1,4 +1,3 @@
-use crate::AuthProvider as ApiAuthProvider;
 use crate::TransportError;
 use crate::error::ApiError;
 use crate::rate_limits::parse_promo_message;
@@ -33,6 +32,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
             identity_error_code: None,
         }),
         ApiError::InvalidRequest { message } => CodexErr::InvalidRequest(message),
+        ApiError::CyberPolicy { message } => CodexErr::CyberPolicy { message },
         ApiError::Transport(transport) => match transport {
             TransportError::Http {
                 status,
@@ -56,7 +56,19 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                 }
 
                 if status == http::StatusCode::BAD_REQUEST {
-                    if body_text
+                    if let Ok(parsed) = serde_json::from_str::<Value>(&body_text)
+                        && let Some(error) = parsed.get("error")
+                        && error.get("code").and_then(Value::as_str)
+                            == Some(CYBER_POLICY_ERROR_CODE)
+                    {
+                        let message = error
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .filter(|message| !message.trim().is_empty())
+                            .map(str::to_string)
+                            .unwrap_or_else(|| CYBER_POLICY_FALLBACK_MESSAGE.to_string());
+                        CodexErr::CyberPolicy { message }
+                    } else if body_text
                         .contains("The image data you provided does not represent a valid image")
                     {
                         CodexErr::InvalidImageRequest()
@@ -126,6 +138,9 @@ const OAI_REQUEST_ID_HEADER: &str = "x-oai-request-id";
 const CF_RAY_HEADER: &str = "cf-ray";
 const X_OPENAI_AUTHORIZATION_ERROR_HEADER: &str = "x-openai-authorization-error";
 const X_ERROR_JSON_HEADER: &str = "x-error-json";
+const CYBER_POLICY_ERROR_CODE: &str = "cyber_policy";
+const CYBER_POLICY_FALLBACK_MESSAGE: &str =
+    "This request has been flagged for possible cybersecurity risk.";
 
 #[cfg(test)]
 #[path = "api_bridge_tests.rs"]
@@ -172,39 +187,4 @@ struct UsageErrorBody {
     error_type: Option<String>,
     plan_type: Option<PlanType>,
     resets_at: Option<i64>,
-}
-
-#[derive(Clone, Default)]
-pub struct CoreAuthProvider {
-    pub token: Option<String>,
-    pub account_id: Option<String>,
-}
-
-impl CoreAuthProvider {
-    pub fn auth_header_attached(&self) -> bool {
-        self.token
-            .as_ref()
-            .is_some_and(|token| http::HeaderValue::from_str(&format!("Bearer {token}")).is_ok())
-    }
-
-    pub fn auth_header_name(&self) -> Option<&'static str> {
-        self.auth_header_attached().then_some("authorization")
-    }
-
-    pub fn for_test(token: Option<&str>, account_id: Option<&str>) -> Self {
-        Self {
-            token: token.map(str::to_string),
-            account_id: account_id.map(str::to_string),
-        }
-    }
-}
-
-impl ApiAuthProvider for CoreAuthProvider {
-    fn bearer_token(&self) -> Option<String> {
-        self.token.clone()
-    }
-
-    fn account_id(&self) -> Option<String> {
-        self.account_id.clone()
-    }
 }

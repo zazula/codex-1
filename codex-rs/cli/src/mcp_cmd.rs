@@ -6,6 +6,7 @@ use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
 use clap::ArgGroup;
+use codex_config::types::AppToolApproval;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_core::McpManager;
@@ -13,7 +14,7 @@ use codex_core::config::Config;
 use codex_core::config::edit::ConfigEditsBuilder;
 use codex_core::config::find_codex_home;
 use codex_core::config::load_global_mcp_servers;
-use codex_core::plugins::PluginsManager;
+use codex_core_plugins::PluginsManager;
 use codex_mcp::McpOAuthLoginSupport;
 use codex_mcp::ResolvedMcpOAuthScopes;
 use codex_mcp::compute_auth_statuses;
@@ -297,11 +298,14 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
 
     let new_entry = McpServerConfig {
         transport: transport.clone(),
+        experimental_environment: None,
         enabled: true,
         required: false,
+        supports_parallel_tool_calls: false,
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
+        default_tools_approval_mode: None,
         enabled_tools: None,
         disabled_tools: None,
         scopes: None,
@@ -390,8 +394,10 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
     let config = Config::load_with_cli_overrides(overrides)
         .await
         .context("failed to load configuration")?;
-    let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(config.codex_home.clone())));
-    let mcp_servers = mcp_manager.effective_servers(&config, /*auth*/ None);
+    let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(
+        config.codex_home.to_path_buf(),
+    )));
+    let mcp_servers = mcp_manager.effective_servers(&config, /*auth*/ None).await;
 
     let LoginArgs { name, scopes } = login_args;
 
@@ -441,8 +447,10 @@ async fn run_logout(config_overrides: &CliConfigOverrides, logout_args: LogoutAr
     let config = Config::load_with_cli_overrides(overrides)
         .await
         .context("failed to load configuration")?;
-    let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(config.codex_home.clone())));
-    let mcp_servers = mcp_manager.effective_servers(&config, /*auth*/ None);
+    let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(
+        config.codex_home.to_path_buf(),
+    )));
+    let mcp_servers = mcp_manager.effective_servers(&config, /*auth*/ None).await;
 
     let LogoutArgs { name } = logout_args;
 
@@ -471,13 +479,19 @@ async fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) ->
     let config = Config::load_with_cli_overrides(overrides)
         .await
         .context("failed to load configuration")?;
-    let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(config.codex_home.clone())));
-    let mcp_servers = mcp_manager.effective_servers(&config, /*auth*/ None);
+    let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(
+        config.codex_home.to_path_buf(),
+    )));
+    let mcp_servers = mcp_manager.effective_servers(&config, /*auth*/ None).await;
 
     let mut entries: Vec<_> = mcp_servers.iter().collect();
     entries.sort_by(|(a, _), (b, _)| a.cmp(b));
-    let auth_statuses =
-        compute_auth_statuses(mcp_servers.iter(), config.mcp_oauth_credentials_store_mode).await;
+    let auth_statuses = compute_auth_statuses(
+        mcp_servers.iter(),
+        config.mcp_oauth_credentials_store_mode,
+        /*auth*/ None,
+    )
+    .await;
 
     if list_args.json {
         let json_entries: Vec<_> = entries
@@ -720,8 +734,10 @@ async fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Re
     let config = Config::load_with_cli_overrides(overrides)
         .await
         .context("failed to load configuration")?;
-    let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(config.codex_home.clone())));
-    let mcp_servers = mcp_manager.effective_servers(&config, /*auth*/ None);
+    let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(
+        config.codex_home.to_path_buf(),
+    )));
+    let mcp_servers = mcp_manager.effective_servers(&config, /*auth*/ None).await;
 
     let Some(server) = mcp_servers.get(&get_args.name) else {
         bail!("No MCP server named '{name}' found.", name = get_args.name);
@@ -868,6 +884,14 @@ async fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Re
     }
     if let Some(timeout) = server.tool_timeout_sec {
         println!("  tool_timeout_sec: {}", timeout.as_secs_f64());
+    }
+    if let Some(approval_mode) = server.default_tools_approval_mode {
+        let approval_mode = match approval_mode {
+            AppToolApproval::Auto => "auto",
+            AppToolApproval::Prompt => "prompt",
+            AppToolApproval::Approve => "approve",
+        };
+        println!("  default_tools_approval_mode: {approval_mode}");
     }
     println!("  remove: codex mcp remove {}", get_args.name);
 

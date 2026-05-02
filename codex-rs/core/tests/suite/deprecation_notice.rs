@@ -2,10 +2,10 @@
 
 use anyhow::Ok;
 use codex_app_server_protocol::ConfigLayerSource;
-use codex_core::config_loader::ConfigLayerEntry;
-use codex_core::config_loader::ConfigLayerStack;
-use codex_core::config_loader::ConfigRequirements;
-use codex_core::config_loader::ConfigRequirementsToml;
+use codex_config::ConfigLayerEntry;
+use codex_config::ConfigLayerStack;
+use codex_config::ConfigRequirements;
+use codex_config::ConfigRequirementsToml;
 use codex_features::Feature;
 use codex_protocol::protocol::DeprecationNoticeEvent;
 use codex_protocol::protocol::EventMsg;
@@ -116,6 +116,38 @@ async fn emits_deprecation_notice_for_experimental_instructions_file() -> anyhow
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn emits_deprecation_notice_for_notify() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config.notify = Some(vec!["notify-send".to_string(), "Codex".to_string()]);
+    });
+
+    let TestCodex { codex, .. } = builder.build(&server).await?;
+
+    let notice = wait_for_event_match(&codex, |event| match event {
+        EventMsg::DeprecationNotice(ev) if ev.summary.contains("`notify`") => Some(ev.clone()),
+        _ => None,
+    })
+    .await;
+
+    let DeprecationNoticeEvent { summary, details } = notice;
+    assert_eq!(
+        summary,
+        "`notify` is deprecated and will be removed in a future release.".to_string(),
+    );
+    assert_eq!(
+        details.as_deref(),
+        Some(
+            "Switch to a `Stop` hook for end-of-turn automation. See https://developers.openai.com/codex/hooks."
+        ),
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn emits_deprecation_notice_for_web_search_feature_flag_values() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -158,6 +190,48 @@ async fn emits_deprecation_notice_for_web_search_feature_flag_values() -> anyhow
             ),
         );
     }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn emits_deprecation_notice_for_use_legacy_landlock() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+
+    let mut builder = test_codex().with_config(|config| {
+        let mut entries = BTreeMap::new();
+        entries.insert("use_legacy_landlock".to_string(), true);
+        let mut features = config.features.get().clone();
+        features.apply_map(&entries);
+        config
+            .features
+            .set(features)
+            .expect("test config should allow managed feature map updates");
+    });
+
+    let TestCodex { codex, .. } = builder.build(&server).await?;
+
+    let notice = wait_for_event_match(&codex, |event| match event {
+        EventMsg::DeprecationNotice(ev)
+            if ev.summary.contains("[features].use_legacy_landlock") =>
+        {
+            Some(ev.clone())
+        }
+        _ => None,
+    })
+    .await;
+
+    let DeprecationNoticeEvent { summary, details } = notice;
+    assert_eq!(
+        summary,
+        "`[features].use_legacy_landlock` is deprecated and will be removed soon.".to_string(),
+    );
+    assert_eq!(
+        details.as_deref(),
+        Some("Remove this setting to stop opting into the legacy Linux sandbox behavior."),
+    );
 
     Ok(())
 }

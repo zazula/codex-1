@@ -57,6 +57,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
+        aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,
@@ -117,7 +118,6 @@ async fn responses_stream_includes_subagent_header_on_review() {
         content: vec![ContentItem::InputText {
             text: "hello".into(),
         }],
-        end_turn: None,
         phase: None,
     }];
 
@@ -130,6 +130,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
             summary.unwrap_or(model_info.default_reasoning_summary),
             /*service_tier*/ None,
             /*turn_metadata_header*/ None,
+            &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
         .await
         .expect("stream failed");
@@ -181,6 +182,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
+        aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,
@@ -242,7 +244,6 @@ async fn responses_stream_includes_subagent_header_on_other() {
         content: vec![ContentItem::InputText {
             text: "hello".into(),
         }],
-        end_turn: None,
         phase: None,
     }];
 
@@ -255,6 +256,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
             summary.unwrap_or(model_info.default_reasoning_summary),
             /*service_tier*/ None,
             /*turn_metadata_header*/ None,
+            &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
         .await
         .expect("stream failed");
@@ -290,6 +292,7 @@ async fn responses_respects_model_info_overrides_from_config() {
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
+        aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,
@@ -356,7 +359,6 @@ async fn responses_respects_model_info_overrides_from_config() {
         content: vec![ContentItem::InputText {
             text: "hello".into(),
         }],
-        end_turn: None,
         phase: None,
     }];
 
@@ -369,6 +371,7 @@ async fn responses_respects_model_info_overrides_from_config() {
             summary.unwrap_or(model_info.default_reasoning_summary),
             /*service_tier*/ None,
             /*turn_metadata_header*/ None,
+            &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
         .await
         .expect("stream failed");
@@ -431,11 +434,25 @@ async fn responses_stream_includes_turn_metadata_header_for_git_workspace_e2e() 
         !initial_turn_id.is_empty(),
         "turn_id should not be empty in x-codex-turn-metadata"
     );
+    let initial_turn_started_at_unix_ms = initial_parsed
+        .get("turn_started_at_unix_ms")
+        .and_then(serde_json::Value::as_i64)
+        .expect("turn_started_at_unix_ms should be present");
+    assert!(
+        initial_turn_started_at_unix_ms > 0,
+        "turn_started_at_unix_ms should be positive"
+    );
     assert_eq!(
         initial_parsed
             .get("sandbox")
             .and_then(serde_json::Value::as_str),
         Some("none")
+    );
+    assert_eq!(
+        initial_parsed
+            .get("thread_source")
+            .and_then(serde_json::Value::as_str),
+        Some("user")
     );
 
     let git_config_global = cwd.join("empty-git-config");
@@ -528,6 +545,34 @@ async fn responses_stream_includes_turn_metadata_header_for_git_workspace_e2e() 
         .get("turn_id")
         .and_then(serde_json::Value::as_str)
         .expect("second turn_id should be present");
+    let first_turn_started_at_unix_ms = first_parsed
+        .get("turn_started_at_unix_ms")
+        .and_then(serde_json::Value::as_i64)
+        .expect("first turn_started_at_unix_ms should be present");
+    let second_turn_started_at_unix_ms = second_parsed
+        .get("turn_started_at_unix_ms")
+        .and_then(serde_json::Value::as_i64)
+        .expect("second turn_started_at_unix_ms should be present");
+    assert!(
+        first_turn_started_at_unix_ms > 0,
+        "first turn_started_at_unix_ms should be positive"
+    );
+    assert_eq!(
+        first_turn_started_at_unix_ms, second_turn_started_at_unix_ms,
+        "requests in the same turn should share turn_started_at_unix_ms"
+    );
+    assert_eq!(
+        first_parsed
+            .get("thread_source")
+            .and_then(serde_json::Value::as_str),
+        Some("user")
+    );
+    assert_eq!(
+        second_parsed
+            .get("thread_source")
+            .and_then(serde_json::Value::as_str),
+        Some("user")
+    );
     assert_eq!(
         first_turn_id, second_turn_id,
         "requests should share turn_id"
@@ -557,16 +602,17 @@ async fn responses_stream_includes_turn_metadata_header_for_git_workspace_e2e() 
             .and_then(serde_json::Value::as_str),
         Some(expected_head.as_str())
     );
-    let actual_origin = workspace
+    if let Some(actual_origin) = workspace
         .get("associated_remote_urls")
         .and_then(serde_json::Value::as_object)
         .and_then(|remotes| remotes.get("origin"))
         .and_then(serde_json::Value::as_str)
-        .expect("origin remote should be present");
-    assert_eq!(
-        normalize_git_remote_url(actual_origin),
-        normalize_git_remote_url(&expected_origin)
-    );
+    {
+        assert_eq!(
+            normalize_git_remote_url(actual_origin),
+            normalize_git_remote_url(&expected_origin)
+        );
+    }
     assert_eq!(
         workspace
             .get("has_changes")

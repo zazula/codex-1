@@ -305,6 +305,23 @@ impl SessionTelemetry {
                     handle_responses_span.record("tool_name", name.as_str());
                 }
             }
+            ResponseEvent::Completed {
+                token_usage: Some(token_usage),
+                ..
+            } => {
+                handle_responses_span.record("gen_ai.usage.input_tokens", token_usage.input_tokens);
+                handle_responses_span.record(
+                    "gen_ai.usage.cache_read.input_tokens",
+                    token_usage.cached_input(),
+                );
+                handle_responses_span
+                    .record("gen_ai.usage.output_tokens", token_usage.output_tokens);
+                handle_responses_span.record(
+                    "codex.usage.reasoning_output_tokens",
+                    token_usage.reasoning_output_tokens,
+                );
+                handle_responses_span.record("codex.usage.total_tokens", token_usage.total_tokens);
+            }
             _ => {}
         }
     }
@@ -1051,12 +1068,14 @@ impl SessionTelemetry {
             }
             ResponseEvent::Completed { .. } => "completed".into(),
             ResponseEvent::OutputTextDelta(_) => "text_delta".into(),
+            ResponseEvent::ToolCallInputDelta { .. } => "tool_input_delta".into(),
             ResponseEvent::ReasoningSummaryDelta { .. } => "reasoning_summary_delta".into(),
             ResponseEvent::ReasoningContentDelta { .. } => "reasoning_content_delta".into(),
             ResponseEvent::ReasoningSummaryPartAdded { .. } => {
                 "reasoning_summary_part_added".into()
             }
             ResponseEvent::ServerModel(_) => "server_model".into(),
+            ResponseEvent::ModelVerifications(_) => "model_verifications".into(),
             ResponseEvent::ServerReasoningIncluded(_) => "server_reasoning_included".into(),
             ResponseEvent::RateLimits(_) => "rate_limits".into(),
             ResponseEvent::ModelsEtag(_) => "models_etag".into(),
@@ -1076,7 +1095,6 @@ impl SessionTelemetry {
             ResponseItem::CustomToolCallOutput { .. } => "custom_tool_call_output".into(),
             ResponseItem::WebSearchCall { .. } => "web_search_call".into(),
             ResponseItem::ImageGenerationCall { .. } => "image_generation_call".into(),
-            ResponseItem::GhostSnapshot { .. } => "ghost_snapshot".into(),
             ResponseItem::Compaction { .. } => "compaction".into(),
             ResponseItem::Other => "other".into(),
         }

@@ -11,13 +11,14 @@ use crate::config::Config;
 use crate::config::ConfigOverrides;
 use crate::config::agent_roles::parse_agent_role_file_contents;
 use crate::config::deserialize_config_toml_with_base;
-use crate::config_loader::ConfigLayerEntry;
-use crate::config_loader::ConfigLayerStack;
-use crate::config_loader::ConfigLayerStackOrdering;
-use crate::config_loader::resolve_relative_paths_in_config_toml;
 use anyhow::anyhow;
 use codex_app_server_protocol::ConfigLayerSource;
+use codex_config::ConfigLayerEntry;
+use codex_config::ConfigLayerStack;
+use codex_config::ConfigLayerStackOrdering;
 use codex_config::config_toml::ConfigToml;
+use codex_config::loader::resolve_relative_paths_in_config_toml;
+use codex_exec_server::LOCAL_FS;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -78,7 +79,8 @@ async fn apply_role_to_config_inner(
         role_layer_toml,
         preserve_current_profile,
         preserve_current_provider,
-    )?;
+    )
+    .await?;
     Ok(())
 }
 
@@ -150,7 +152,7 @@ fn preservation_policy(config: &Config, role_layer_toml: &TomlValue) -> (bool, b
 mod reload {
     use super::*;
 
-    pub(super) fn build_next_config(
+    pub(super) async fn build_next_config(
         config: &Config,
         role_layer_toml: TomlValue,
         preserve_current_profile: bool,
@@ -167,11 +169,13 @@ mod reload {
         }
 
         let mut next_config = Config::load_config_with_layer_stack(
+            LOCAL_FS.as_ref(),
             merged_config,
             reload_overrides(config, preserve_current_provider),
             config.codex_home.clone(),
             config_layer_stack,
-        )?;
+        )
+        .await?;
         if preserve_current_profile {
             next_config.active_profile = config.active_profile.clone();
         }
@@ -263,7 +267,6 @@ mod reload {
             model_provider: preserve_current_provider.then(|| config.model_provider_id.clone()),
             codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
             main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),
-            js_repl_node_path: config.js_repl_node_path.clone(),
             ..Default::default()
         }
     }

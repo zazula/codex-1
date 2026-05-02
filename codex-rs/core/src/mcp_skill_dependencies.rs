@@ -16,10 +16,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::SkillMetadata;
-use crate::codex::Session;
-use crate::codex::TurnContext;
+use crate::session::session::Session;
+use crate::session::turn_context::TurnContext;
 use crate::skills::model::SkillToolDependency;
 use codex_mcp::McpOAuthLoginSupport;
+use codex_mcp::McpPermissionPromptAutoApproveContext;
 use codex_mcp::mcp_permission_prompt_is_auto_approved;
 use codex_mcp::oauth_login_support;
 use codex_mcp::resolve_oauth_scopes;
@@ -53,7 +54,8 @@ pub(crate) async fn maybe_prompt_and_install_mcp_dependencies(
     let installed = sess
         .services
         .mcp_manager
-        .configured_servers(config.as_ref());
+        .configured_servers(config.as_ref())
+        .await;
     let missing = collect_missing_mcp_dependencies(mentioned_skills, &installed);
     if missing.is_empty() {
         return;
@@ -86,7 +88,7 @@ pub(crate) async fn maybe_install_mcp_dependencies(
     }
 
     let codex_home = config.codex_home.clone();
-    let installed = sess.services.mcp_manager.configured_servers(config);
+    let installed = sess.services.mcp_manager.configured_servers(config).await;
     let missing = collect_missing_mcp_dependencies(mentioned_skills, &installed);
     if missing.is_empty() {
         return;
@@ -134,14 +136,6 @@ pub(crate) async fn maybe_install_mcp_dependencies(
             }
         };
 
-        sess.notify_background_event(
-            turn_context,
-            format!(
-                "Authenticating MCP {name}... Follow instructions in your browser if prompted."
-            ),
-        )
-        .await;
-
         let resolved_scopes = resolve_oauth_scopes(
             /*explicit_scopes*/ None,
             server_config.scopes.clone(),
@@ -162,14 +156,6 @@ pub(crate) async fn maybe_install_mcp_dependencies(
 
         if let Err(err) = first_attempt {
             if should_retry_without_scopes(&resolved_scopes, &err) {
-                sess.notify_background_event(
-                    turn_context,
-                    format!(
-                        "Retrying MCP {name} authentication without scopes after provider rejection."
-                    ),
-                )
-                .await;
-
                 if let Err(err) = perform_oauth_login(
                     &name,
                     &oauth_config.url,
@@ -197,7 +183,8 @@ pub(crate) async fn maybe_install_mcp_dependencies(
     let mut refresh_servers = sess
         .services
         .mcp_manager
-        .effective_servers(config, auth.as_ref());
+        .effective_servers(config, auth.as_ref())
+        .await;
     for (name, server_config) in &servers {
         refresh_servers
             .entry(name.clone())
@@ -219,7 +206,8 @@ async fn should_install_mcp_dependencies(
 ) -> bool {
     if mcp_permission_prompt_is_auto_approved(
         turn_context.approval_policy.value(),
-        turn_context.sandbox_policy.get(),
+        &turn_context.permission_profile(),
+        McpPermissionPromptAutoApproveContext::default(),
     ) {
         return true;
     }
@@ -362,11 +350,14 @@ fn mcp_dependency_to_server_config(
                 http_headers: None,
                 env_http_headers: None,
             },
+            experimental_environment: None,
             enabled: true,
             required: false,
+            supports_parallel_tool_calls: false,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
+            default_tools_approval_mode: None,
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
@@ -388,11 +379,14 @@ fn mcp_dependency_to_server_config(
                 env_vars: Vec::new(),
                 cwd: None,
             },
+            experimental_environment: None,
             enabled: true,
             required: false,
+            supports_parallel_tool_calls: false,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
+            default_tools_approval_mode: None,
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,

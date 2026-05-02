@@ -28,15 +28,16 @@ use std::sync::Arc;
 use std::sync::Weak;
 
 use codex_network_proxy::NetworkProxy;
-use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::AdditionalPermissionProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use rand::Rng;
 use rand::rng;
 use tokio::sync::Mutex;
 
-use crate::codex::Session;
-use crate::codex::TurnContext;
 use crate::sandboxing::SandboxPermissions;
+use crate::session::session::Session;
+use crate::session::turn_context::TurnContext;
+use crate::tools::network_approval::DeferredNetworkApproval;
 
 mod async_watcher;
 mod errors;
@@ -88,6 +89,7 @@ impl UnifiedExecContext {
 #[derive(Debug)]
 pub(crate) struct ExecCommandRequest {
     pub command: Vec<String>,
+    pub hook_command: String,
     pub process_id: i32,
     pub yield_time_ms: u64,
     pub max_output_tokens: Option<usize>,
@@ -95,7 +97,7 @@ pub(crate) struct ExecCommandRequest {
     pub network: Option<NetworkProxy>,
     pub tty: bool,
     pub sandbox_permissions: SandboxPermissions,
-    pub additional_permissions: Option<PermissionProfile>,
+    pub additional_permissions: Option<AdditionalPermissionProfile>,
     pub additional_permissions_preapproved: bool,
     pub justification: Option<String>,
     pub prefix_rule: Option<Vec<String>>,
@@ -147,9 +149,9 @@ struct ProcessEntry {
     process: Arc<UnifiedExecProcess>,
     call_id: String,
     process_id: i32,
-    command: Vec<String>,
+    hook_command: String,
     tty: bool,
-    network_approval_id: Option<String>,
+    network_approval: Option<DeferredNetworkApproval>,
     session: Weak<Session>,
     last_used: tokio::time::Instant,
 }

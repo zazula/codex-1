@@ -1,14 +1,14 @@
 //! Session-wide mutable state.
 
-use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_sandboxing::policy_transforms::merge_permission_profiles;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use crate::codex::PreviousTurnSettings;
-use crate::codex::SessionConfiguration;
 use crate::context_manager::ContextManager;
+use crate::session::PreviousTurnSettings;
+use crate::session::session::SessionConfiguration;
 use crate::session_startup_prewarm::SessionStartupPrewarmHandle;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::TokenUsage;
@@ -32,7 +32,8 @@ pub(crate) struct SessionState {
     pub(crate) startup_prewarm: Option<SessionStartupPrewarmHandle>,
     pub(crate) active_connector_selection: HashSet<String>,
     pub(crate) pending_session_start_source: Option<codex_hooks::SessionStartSource>,
-    granted_permissions: Option<PermissionProfile>,
+    granted_permissions: Option<AdditionalPermissionProfile>,
+    next_turn_is_first: bool,
 }
 
 impl SessionState {
@@ -51,6 +52,7 @@ impl SessionState {
             active_connector_selection: HashSet::new(),
             pending_session_start_source: None,
             granted_permissions: None,
+            next_turn_is_first: true,
         }
     }
 
@@ -71,6 +73,16 @@ impl SessionState {
         previous_turn_settings: Option<PreviousTurnSettings>,
     ) {
         self.previous_turn_settings = previous_turn_settings;
+    }
+
+    pub(crate) fn set_next_turn_is_first(&mut self, value: bool) {
+        self.next_turn_is_first = value;
+    }
+
+    pub(crate) fn take_next_turn_is_first(&mut self) -> bool {
+        let is_first_turn = self.next_turn_is_first;
+        self.next_turn_is_first = false;
+        is_first_turn
     }
 
     pub(crate) fn clone_history(&self) -> ContextManager {
@@ -206,12 +218,12 @@ impl SessionState {
         self.pending_session_start_source.take()
     }
 
-    pub(crate) fn record_granted_permissions(&mut self, permissions: PermissionProfile) {
+    pub(crate) fn record_granted_permissions(&mut self, permissions: AdditionalPermissionProfile) {
         self.granted_permissions =
             merge_permission_profiles(self.granted_permissions.as_ref(), Some(&permissions));
     }
 
-    pub(crate) fn granted_permissions(&self) -> Option<PermissionProfile> {
+    pub(crate) fn granted_permissions(&self) -> Option<AdditionalPermissionProfile> {
         self.granted_permissions.clone()
     }
 }

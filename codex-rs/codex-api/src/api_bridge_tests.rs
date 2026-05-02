@@ -27,6 +27,104 @@ fn map_api_error_maps_server_overloaded_from_503_body() {
 }
 
 #[test]
+fn map_api_error_maps_cyber_policy_from_400_body() {
+    let body = serde_json::json!({
+        "error": {
+            "message": "This request has been flagged for potentially high-risk cyber activity.",
+            "type": "invalid_request",
+            "param": null,
+            "code": "cyber_policy"
+        }
+    })
+    .to_string();
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::BAD_REQUEST,
+        url: Some("http://example.com/v1/responses".to_string()),
+        headers: None,
+        body: Some(body),
+    }));
+
+    let CodexErr::CyberPolicy { message } = err else {
+        panic!("expected CodexErr::CyberPolicy, got {err:?}");
+    };
+    assert_eq!(
+        message,
+        "This request has been flagged for potentially high-risk cyber activity."
+    );
+}
+
+#[test]
+fn map_api_error_maps_wrapped_websocket_cyber_policy_from_400_body() {
+    let body = serde_json::json!({
+        "type": "error",
+        "status": 400,
+        "error": {
+            "message": "This websocket request was flagged.",
+            "type": "invalid_request",
+            "code": "cyber_policy"
+        }
+    })
+    .to_string();
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::BAD_REQUEST,
+        url: Some("ws://example.com/v1/responses".to_string()),
+        headers: None,
+        body: Some(body),
+    }));
+
+    let CodexErr::CyberPolicy { message } = err else {
+        panic!("expected CodexErr::CyberPolicy, got {err:?}");
+    };
+    assert_eq!(message, "This websocket request was flagged.");
+}
+
+#[test]
+fn map_api_error_uses_cyber_policy_fallback_for_missing_message() {
+    let body = serde_json::json!({
+        "error": {
+            "code": "cyber_policy"
+        }
+    })
+    .to_string();
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::BAD_REQUEST,
+        url: Some("http://example.com/v1/responses".to_string()),
+        headers: None,
+        body: Some(body),
+    }));
+
+    let CodexErr::CyberPolicy { message } = err else {
+        panic!("expected CodexErr::CyberPolicy, got {err:?}");
+    };
+    assert_eq!(
+        message,
+        "This request has been flagged for possible cybersecurity risk."
+    );
+}
+
+#[test]
+fn map_api_error_keeps_unknown_400_errors_generic() {
+    let body = serde_json::json!({
+        "error": {
+            "message": "Some other bad request.",
+            "code": "some_other_policy"
+        }
+    })
+    .to_string();
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::BAD_REQUEST,
+        url: Some("http://example.com/v1/responses".to_string()),
+        headers: None,
+        body: Some(body.clone()),
+    }));
+
+    let CodexErr::InvalidRequest(message) = err else {
+        panic!("expected CodexErr::InvalidRequest, got {err:?}");
+    };
+    assert_eq!(message, body);
+}
+
+#[test]
 fn map_api_error_maps_usage_limit_limit_name_header() {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -129,15 +227,4 @@ fn map_api_error_extracts_identity_auth_details_from_headers() {
         Some("missing_authorization_header")
     );
     assert_eq!(err.identity_error_code.as_deref(), Some("token_expired"));
-}
-
-#[test]
-fn core_auth_provider_reports_when_auth_header_will_attach() {
-    let auth = CoreAuthProvider {
-        token: Some("access-token".to_string()),
-        account_id: None,
-    };
-
-    assert!(auth.auth_header_attached());
-    assert_eq!(auth.auth_header_name(), Some("authorization"));
 }

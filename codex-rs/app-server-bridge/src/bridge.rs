@@ -2640,6 +2640,8 @@ fn parse_turn_start_params(
     Ok(TurnStartParams {
         thread_id,
         input,
+        responsesapi_client_metadata: None,
+        environments: None,
         cwd: args
             .get("cwd")
             .and_then(|v| v.as_str())
@@ -2650,6 +2652,7 @@ fn parse_turn_start_params(
             .and_then(|s| serde_json::from_value(json!(s)).ok()),
         approvals_reviewer: None,
         sandbox_policy: None,
+        permissions: None,
         model: args.get("model").and_then(|v| v.as_str()).map(String::from),
         service_tier: args
             .get("serviceTier")

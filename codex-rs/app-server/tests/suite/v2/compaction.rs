@@ -38,6 +38,11 @@ use std::collections::BTreeMap;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
+// macOS and Windows Bazel CI can spend tens of seconds starting app-server
+// subprocesses or processing test RPCs under load.
+#[cfg(any(target_os = "macos", windows))]
+const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+#[cfg(not(any(target_os = "macos", windows)))]
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const AUTO_COMPACT_LIMIT: i64 = 1_000;
 const COMPACT_PROMPT: &str = "Summarize the conversation.";
@@ -129,7 +134,6 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
             content: vec![ContentItem::OutputText {
                 text: "REMOTE_COMPACT_SUMMARY".to_string(),
             }],
-            end_turn: None,
             phase: None,
         },
         ResponseItem::Compaction {

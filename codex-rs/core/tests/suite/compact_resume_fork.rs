@@ -60,29 +60,6 @@ fn json_fragment(text: &str) -> String {
         .to_string()
 }
 
-fn filter_out_ghost_snapshot_entries(items: &[Value]) -> Vec<Value> {
-    items
-        .iter()
-        .filter(|item| !is_ghost_snapshot_message(item))
-        .cloned()
-        .collect()
-}
-
-fn is_ghost_snapshot_message(item: &Value) -> bool {
-    if item.get("type").and_then(Value::as_str) != Some("message") {
-        return false;
-    }
-    if item.get("role").and_then(Value::as_str) != Some("user") {
-        return false;
-    }
-    item.get("content")
-        .and_then(Value::as_array)
-        .and_then(|content| content.first())
-        .and_then(|entry| entry.get("text"))
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.trim_start().starts_with("<ghost_snapshot>"))
-}
-
 fn normalize_line_endings_str(text: &str) -> String {
     if text.contains('\r') {
         text.replace("\r\n", "\n").replace('\r', "\n")
@@ -158,7 +135,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
     // 1. Arrange mocked SSE responses for the initial compact/resume/fork flow.
     let server = MockServer::start().await;
     let request_log = mount_initial_flow(&server).await;
-    let expected_model = "gpt-5.1-codex";
+    let expected_model = "gpt-5.4";
     // 2. Start a new conversation and drive it through the compact/resume/fork steps.
     let (_home, config, manager, base) =
         start_test_conversation(&server, Some(expected_model)).await;
@@ -172,6 +149,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
         "compact+resume test expects base path {base_path:?} to exist",
     );
 
+    shutdown_conversation(&base).await;
     let resumed = resume_conversation(&manager, &config, base_path).await;
     user_turn(&resumed, "AFTER_RESUME").await;
     let resumed_path = fetch_conversation_path(&resumed);
@@ -327,6 +305,7 @@ async fn compact_resume_after_second_compaction_preserves_history() -> Result<()
         "second compact test expects base path {base_path:?} to exist",
     );
 
+    shutdown_conversation(&base).await;
     let resumed = resume_conversation(&manager, &config, base_path).await;
     user_turn(&resumed, "AFTER_RESUME").await;
     let resumed_path = fetch_conversation_path(&resumed);
@@ -346,6 +325,7 @@ async fn compact_resume_after_second_compaction_preserves_history() -> Result<()
         "second compact test expects forked path {forked_path:?} to exist",
     );
 
+    shutdown_conversation(&forked).await;
     let resumed_again = resume_conversation(&manager, &config, forked_path).await;
     user_turn(&resumed_again, AFTER_SECOND_RESUME).await;
 
@@ -366,15 +346,13 @@ async fn compact_resume_after_second_compaction_preserves_history() -> Result<()
     let resume_input_array = input_after_resume
         .as_array()
         .expect("input after resume should be an array");
-    let compact_filtered = filter_out_ghost_snapshot_entries(compact_input_array);
-    let resume_filtered = filter_out_ghost_snapshot_entries(resume_input_array);
     assert!(
-        compact_filtered.len() <= resume_filtered.len(),
+        compact_input_array.len() <= resume_input_array.len(),
         "after-resume input should have at least as many items as after-compact"
     );
     assert_eq!(
-        compact_filtered.as_slice(),
-        &resume_filtered[..compact_filtered.len()]
+        compact_input_array.as_slice(),
+        &resume_input_array[..compact_input_array.len()]
     );
     let first_request_user_texts = json_message_input_texts(&requests[0], "user");
     let first_turn_user_index = first_request_user_texts
@@ -538,7 +516,7 @@ async fn snapshot_rollback_followup_turn_trims_context_updates() -> Result<()> {
         return Ok(());
     }
 
-    const MODEL: &str = "gpt-5.1-codex";
+    const MODEL: &str = "gpt-5.4";
     const TURN_ONE_USER: &str = "turn 1 user";
     const TURN_TWO_USER: &str = "turn 2 user";
     const FOLLOWUP_USER: &str = "follow-up user";
@@ -575,6 +553,7 @@ async fn snapshot_rollback_followup_turn_trims_context_updates() -> Result<()> {
             approval_policy: None,
             approvals_reviewer: None,
             sandbox_policy: None,
+            permission_profile: None,
             windows_sandbox_level: None,
             model: None,
             effort: None,
@@ -803,11 +782,13 @@ async fn start_test_conversation(
 async fn user_turn(conversation: &Arc<CodexThread>, text: &str) {
     conversation
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: text.into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .expect("submit user turn");
@@ -835,6 +816,13 @@ async fn compact_conversation(conversation: &Arc<CodexThread>) {
 
 fn fetch_conversation_path(conversation: &Arc<CodexThread>) -> std::path::PathBuf {
     conversation.rollout_path().expect("rollout path")
+}
+
+async fn shutdown_conversation(conversation: &Arc<CodexThread>) {
+    conversation
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown conversation");
 }
 
 async fn resume_conversation(

@@ -1,8 +1,12 @@
 use codex_config::ConfigLayerStack;
+use codex_plugin::PluginHookSource;
 use tokio::process::Command;
 
 use crate::engine::ClaudeHooksEngine;
 use crate::engine::CommandShell;
+use crate::engine::HookListEntry;
+use crate::events::permission_request::PermissionRequestOutcome;
+use crate::events::permission_request::PermissionRequestRequest;
 use crate::events::post_tool_use::PostToolUseOutcome;
 use crate::events::post_tool_use::PostToolUseRequest;
 use crate::events::pre_tool_use::PreToolUseOutcome;
@@ -23,8 +27,16 @@ pub struct HooksConfig {
     pub legacy_notify_argv: Option<Vec<String>>,
     pub feature_enabled: bool,
     pub config_layer_stack: Option<ConfigLayerStack>,
+    pub plugin_hook_sources: Vec<PluginHookSource>,
+    pub plugin_hook_load_warnings: Vec<String>,
     pub shell_program: Option<String>,
     pub shell_args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HookListOutcome {
+    pub hooks: Vec<HookListEntry>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -51,6 +63,8 @@ impl Hooks {
         let engine = ClaudeHooksEngine::new(
             config.feature_enabled,
             config.config_layer_stack.as_ref(),
+            config.plugin_hook_sources,
+            config.plugin_hook_load_warnings,
             CommandShell {
                 program: config.shell_program.unwrap_or_default(),
                 args: config.shell_args,
@@ -103,6 +117,13 @@ impl Hooks {
         self.engine.preview_pre_tool_use(request)
     }
 
+    pub fn preview_permission_request(
+        &self,
+        request: &PermissionRequestRequest,
+    ) -> Vec<codex_protocol::protocol::HookRunSummary> {
+        self.engine.preview_permission_request(request)
+    }
+
     pub fn preview_post_tool_use(
         &self,
         request: &PostToolUseRequest,
@@ -120,6 +141,13 @@ impl Hooks {
 
     pub async fn run_pre_tool_use(&self, request: PreToolUseRequest) -> PreToolUseOutcome {
         self.engine.run_pre_tool_use(request).await
+    }
+
+    pub async fn run_permission_request(
+        &self,
+        request: PermissionRequestRequest,
+    ) -> PermissionRequestOutcome {
+        self.engine.run_permission_request(request).await
     }
 
     pub async fn run_post_tool_use(&self, request: PostToolUseRequest) -> PostToolUseOutcome {
@@ -149,6 +177,22 @@ impl Hooks {
 
     pub async fn run_stop(&self, request: StopRequest) -> StopOutcome {
         self.engine.run_stop(request).await
+    }
+}
+
+pub fn list_hooks(config: HooksConfig) -> HookListOutcome {
+    if !config.feature_enabled {
+        return HookListOutcome::default();
+    }
+
+    let discovered = crate::engine::discovery::discover_handlers(
+        config.config_layer_stack.as_ref(),
+        config.plugin_hook_sources,
+        config.plugin_hook_load_warnings,
+    );
+    HookListOutcome {
+        hooks: discovered.hook_entries,
+        warnings: discovered.warnings,
     }
 }
 

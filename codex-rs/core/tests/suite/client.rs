@@ -1,9 +1,11 @@
+use codex_config::ConfigLayerStack;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::ModelClient;
 use codex_core::NewThread;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
 use codex_core::ThreadManager;
+use codex_core::thread_store_from_config;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -12,7 +14,6 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_model_provider_info::built_in_model_providers;
 use codex_models_manager::bundled_models_response;
-use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_otel::SessionTelemetry;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
@@ -24,6 +25,7 @@ use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageDetail;
@@ -70,6 +72,7 @@ use std::io::Write;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use tempfile::TempDir;
+use toml::toml;
 use uuid::Uuid;
 use wiremock::Mock;
 use wiremock::MockServer;
@@ -234,7 +237,7 @@ move /y tokens.next tokens.txt >nul
         ModelProviderAuthInfo {
             command: self.command.clone(),
             args: self.args.clone(),
-            // Match the provider-auth default to avoid brittle shell-startup timing in CI.
+            // Match the model-provider default to avoid brittle shell-startup timing in CI.
             timeout_ms: non_zero_u64(/*value*/ 5_000),
             refresh_interval_ms: 60_000,
             cwd: match codex_utils_absolute_path::AbsolutePathBuf::try_from(self.tempdir.path()) {
@@ -287,7 +290,6 @@ async fn resume_includes_initial_messages_and_sends_prior_items() {
         content: vec![codex_protocol::models::ContentItem::InputText {
             text: "resumed user message".to_string(),
         }],
-        end_turn: None,
         phase: None,
     };
     let prior_user_json = serde_json::to_value(&prior_user).unwrap();
@@ -309,7 +311,6 @@ async fn resume_includes_initial_messages_and_sends_prior_items() {
         content: vec![codex_protocol::models::ContentItem::OutputText {
             text: "resumed system instruction".to_string(),
         }],
-        end_turn: None,
         phase: None,
     };
     let prior_system_json = serde_json::to_value(&prior_system).unwrap();
@@ -331,7 +332,6 @@ async fn resume_includes_initial_messages_and_sends_prior_items() {
         content: vec![codex_protocol::models::ContentItem::OutputText {
             text: "resumed assistant message".to_string(),
         }],
-        end_turn: None,
         phase: Some(MessagePhase::Commentary),
     };
     let prior_item_json = serde_json::to_value(&prior_item).unwrap();
@@ -382,11 +382,13 @@ async fn resume_includes_initial_messages_and_sends_prior_items() {
     // 2) Submit new input; the request body must include the prior items, then initial context, then new user input.
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -510,8 +512,8 @@ async fn resume_replays_legacy_js_repl_image_rollout_shapes() {
                 role: "user".to_string(),
                 content: vec![ContentItem::InputImage {
                     image_url: legacy_image_url.to_string(),
+                    detail: Some(DEFAULT_IMAGE_DETAIL),
                 }],
-                end_turn: None,
                 phase: None,
             }),
         },
@@ -534,7 +536,7 @@ async fn resume_replays_legacy_js_repl_image_rollout_shapes() {
     .await;
 
     let codex_home = Arc::new(TempDir::new().unwrap());
-    let mut builder = test_codex().with_model("gpt-5.1");
+    let mut builder = test_codex().with_model("gpt-5.4");
     let test = builder
         .resume(&server, codex_home, session_path.clone())
         .await
@@ -685,7 +687,7 @@ async fn resume_replays_image_tool_outputs_with_detail() {
     .await;
 
     let codex_home = Arc::new(TempDir::new().unwrap());
-    let mut builder = test_codex().with_model("gpt-5.1");
+    let mut builder = test_codex().with_model("gpt-5.4");
     let test = builder
         .resume(&server, codex_home, session_path.clone())
         .await
@@ -744,11 +746,13 @@ async fn includes_conversation_id_and_model_headers_in_request() {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -837,6 +841,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: Some(auth),
+        aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,
@@ -894,7 +899,6 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         content: vec![ContentItem::InputText {
             text: "hello".to_string(),
         }],
-        end_turn: None,
         phase: None,
     });
 
@@ -907,6 +911,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
             summary.unwrap_or(ReasoningSummary::Auto),
             /*service_tier*/ None,
             /*turn_metadata_header*/ None,
+            &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
         .await
         .expect("responses stream to start");
@@ -942,11 +947,13 @@ async fn includes_base_instructions_override_in_request() {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -995,11 +1002,13 @@ async fn chatgpt_auth_sends_correct_request() {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1081,37 +1090,39 @@ async fn prefers_apikey_when_config_prefers_apikey_even_with_chatgpt_tokens() {
     let mut config = load_default_config_for_test(&codex_home).await;
     config.model_provider = model_provider;
 
-    let auth_manager =
-        match CodexAuth::from_auth_storage(codex_home.path(), AuthCredentialsStoreMode::File) {
-            Ok(Some(auth)) => codex_core::test_support::auth_manager_from_auth(auth),
-            Ok(None) => panic!("No CodexAuth found in codex_home"),
-            Err(e) => panic!("Failed to load CodexAuth: {e}"),
-        };
+    let auth_manager = match CodexAuth::from_auth_storage(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+    )
+    .await
+    {
+        Ok(Some(auth)) => codex_core::test_support::auth_manager_from_auth(auth),
+        Ok(None) => panic!("No CodexAuth found in codex_home"),
+        Err(e) => panic!("Failed to load CodexAuth: {e}"),
+    };
     let thread_manager = ThreadManager::new(
         &config,
         auth_manager,
         SessionSource::Exec,
-        CollaborationModesConfig {
-            default_mode_request_user_input: config
-                .features
-                .enabled(Feature::DefaultModeRequestUserInput),
-        },
-        Arc::new(codex_exec_server::EnvironmentManager::new(
-            /*exec_server_url*/ None,
-        )),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        /*analytics_events_client*/ None,
+        thread_store_from_config(&config),
     );
     let NewThread { thread: codex, .. } = thread_manager
-        .start_thread(config)
+        .start_thread(config.clone())
         .await
         .expect("create new conversation");
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1143,11 +1154,13 @@ async fn includes_user_instructions_message_in_request() {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1228,11 +1241,13 @@ async fn includes_apps_guidance_as_developer_message_for_chatgpt_auth() {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1288,11 +1303,13 @@ async fn omits_apps_guidance_for_api_key_auth_even_when_feature_enabled() {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1344,11 +1361,13 @@ async fn omits_apps_guidance_when_configured_off() {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1383,11 +1402,13 @@ async fn omits_environment_context_when_configured_off() {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1437,11 +1458,13 @@ async fn skills_append_to_developer_message() {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1469,6 +1492,95 @@ async fn skills_append_to_developer_message() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skills_use_aliases_in_developer_message_under_budget_pressure() {
+    skip_if_no_network!();
+    let server = MockServer::start().await;
+
+    let resp_mock = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
+    )
+    .await;
+
+    let codex_home_parent = TempDir::new().unwrap();
+    let long_home_parent = codex_home_parent
+        .path()
+        .join("codex-home-with-long-shared-prefix-for-skill-alias-budget-test");
+    std::fs::create_dir_all(&long_home_parent).expect("create long home parent");
+    let codex_home = Arc::new(TempDir::new_in(long_home_parent).unwrap());
+    let skill_root = codex_home.path().join("skills");
+    for index in 0..12 {
+        let skill_dir = skill_root.join(format!("s{index:02}"));
+        std::fs::create_dir_all(&skill_dir).expect("create skill dir");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: s{index:02}\ndescription: d\n---\n\n# body\n"),
+        )
+        .expect("write skill");
+    }
+
+    let codex_home_path = codex_home.path().to_path_buf();
+    let mut builder = test_codex()
+        .with_home(codex_home.clone())
+        .with_auth(CodexAuth::from_api_key("Test API Key"))
+        .with_config(move |config| {
+            config.cwd = codex_home_path.abs();
+            let user_config_path = codex_home_path.join("config.toml").abs();
+            config.config_layer_stack = ConfigLayerStack::default().with_user_config(
+                &user_config_path,
+                toml! { skills = { bundled = { enabled = false } } }.into(),
+            );
+            config.model_context_window = Some(12_000);
+        });
+    let codex = builder
+        .build(&server)
+        .await
+        .expect("create new conversation")
+        .codex;
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await
+        .unwrap();
+
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    let request = resp_mock.single_request();
+    let developer_messages = request.message_input_texts("developer");
+    let developer_text = developer_messages.join("\n\n");
+    let expected_root = normalize_path(skill_root).unwrap();
+    let expected_root_str = expected_root.to_string_lossy().replace('\\', "/");
+    assert!(
+        developer_text.contains("### Skill roots"),
+        "expected aliased skills root section: {developer_messages:?}"
+    );
+    assert!(
+        developer_text.contains(&format!("- `r0` = `{expected_root_str}`")),
+        "expected root alias for {expected_root_str}: {developer_messages:?}"
+    );
+    assert!(
+        developer_text.contains("- s00: d (file: r0/s00/SKILL.md)"),
+        "expected skill path to use root alias: {developer_messages:?}"
+    );
+    assert!(
+        developer_text.contains(
+            "expand the listed short `path` with the matching alias from `### Skill roots`"
+        ),
+        "expected alias-specific skill instructions: {developer_messages:?}"
+    );
+    let _codex_home_guard = codex_home;
+    let _codex_home_parent_guard = codex_home_parent;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn includes_configured_effort_in_request() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
     let server = MockServer::start().await;
@@ -1479,7 +1591,7 @@ async fn includes_configured_effort_in_request() -> anyhow::Result<()> {
     )
     .await;
     let TestCodex { codex, .. } = test_codex()
-        .with_model("gpt-5.1-codex")
+        .with_model("gpt-5.4")
         .with_config(|config| {
             config.model_reasoning_effort = Some(ReasoningEffort::Medium);
         })
@@ -1488,11 +1600,13 @@ async fn includes_configured_effort_in_request() -> anyhow::Result<()> {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1523,18 +1637,17 @@ async fn includes_no_effort_in_request() -> anyhow::Result<()> {
         sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
     )
     .await;
-    let TestCodex { codex, .. } = test_codex()
-        .with_model("gpt-5.1-codex")
-        .build(&server)
-        .await?;
+    let TestCodex { codex, .. } = test_codex().with_model("gpt-5.4").build(&server).await?;
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1549,7 +1662,7 @@ async fn includes_no_effort_in_request() -> anyhow::Result<()> {
             .get("reasoning")
             .and_then(|t| t.get("effort"))
             .and_then(|v| v.as_str()),
-        Some("medium")
+        Some("xhigh")
     );
 
     Ok(())
@@ -1566,15 +1679,17 @@ async fn includes_default_reasoning_effort_in_request_when_defined_by_model_info
         sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
     )
     .await;
-    let TestCodex { codex, .. } = test_codex().with_model("gpt-5.1").build(&server).await?;
+    let TestCodex { codex, .. } = test_codex().with_model("gpt-5.4").build(&server).await?;
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1589,7 +1704,7 @@ async fn includes_default_reasoning_effort_in_request_when_defined_by_model_info
             .get("reasoning")
             .and_then(|t| t.get("effort"))
             .and_then(|v| v.as_str()),
-        Some("medium")
+        Some("xhigh")
     );
 
     Ok(())
@@ -1610,15 +1725,12 @@ async fn user_turn_collaboration_mode_overrides_model_and_effort() -> anyhow::Re
         config,
         session_configured,
         ..
-    } = test_codex()
-        .with_model("gpt-5.1-codex")
-        .build(&server)
-        .await?;
+    } = test_codex().with_model("gpt-5.4").build(&server).await?;
 
     let collaboration_mode = CollaborationMode {
         mode: ModeKind::Default,
         settings: Settings {
-            model: "gpt-5.1".to_string(),
+            model: "gpt-5.4".to_string(),
             reasoning_effort: Some(ReasoningEffort::High),
             developer_instructions: None,
         },
@@ -1626,6 +1738,7 @@ async fn user_turn_collaboration_mode_overrides_model_and_effort() -> anyhow::Re
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
@@ -1633,7 +1746,8 @@ async fn user_turn_collaboration_mode_overrides_model_and_effort() -> anyhow::Re
             cwd: config.cwd.to_path_buf(),
             approval_policy: config.permissions.approval_policy.value(),
             approvals_reviewer: None,
-            sandbox_policy: config.permissions.sandbox_policy.get().clone(),
+            sandbox_policy: config.legacy_sandbox_policy(),
+            permission_profile: None,
             model: session_configured.model.clone(),
             effort: Some(ReasoningEffort::Low),
             summary: Some(
@@ -1651,7 +1765,7 @@ async fn user_turn_collaboration_mode_overrides_model_and_effort() -> anyhow::Re
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     let request_body = resp_mock.single_request().body_json();
-    assert_eq!(request_body["model"].as_str(), Some("gpt-5.1"));
+    assert_eq!(request_body["model"].as_str(), Some("gpt-5.4"));
     assert_eq!(
         request_body
             .get("reasoning")
@@ -1682,11 +1796,13 @@ async fn configured_reasoning_summary_is_sent() -> anyhow::Result<()> {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1724,8 +1840,8 @@ async fn user_turn_explicit_reasoning_summary_overrides_model_catalog_default() 
     let model = model_catalog
         .models
         .iter_mut()
-        .find(|model| model.slug == "gpt-5.1")
-        .expect("gpt-5.1 exists in bundled models.json");
+        .find(|model| model.slug == "gpt-5.4")
+        .expect("gpt-5.4 exists in bundled models.json");
     model.supports_reasoning_summaries = true;
     model.default_reasoning_summary = ReasoningSummary::Detailed;
 
@@ -1735,7 +1851,7 @@ async fn user_turn_explicit_reasoning_summary_overrides_model_catalog_default() 
         session_configured,
         ..
     } = test_codex()
-        .with_model("gpt-5.1")
+        .with_model("gpt-5.4")
         .with_config(move |config| {
             config.model_catalog = Some(model_catalog);
         })
@@ -1744,6 +1860,7 @@ async fn user_turn_explicit_reasoning_summary_overrides_model_catalog_default() 
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
@@ -1751,7 +1868,8 @@ async fn user_turn_explicit_reasoning_summary_overrides_model_catalog_default() 
             cwd: config.cwd.to_path_buf(),
             approval_policy: config.permissions.approval_policy.value(),
             approvals_reviewer: None,
-            sandbox_policy: config.permissions.sandbox_policy.get().clone(),
+            sandbox_policy: config.legacy_sandbox_policy(),
+            permission_profile: None,
             model: session_configured.model,
             effort: None,
             summary: Some(ReasoningSummary::Concise),
@@ -1797,11 +1915,13 @@ async fn reasoning_summary_is_omitted_when_disabled() -> anyhow::Result<()> {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1837,13 +1957,13 @@ async fn reasoning_summary_none_overrides_model_catalog_default() -> anyhow::Res
     let model = model_catalog
         .models
         .iter_mut()
-        .find(|model| model.slug == "gpt-5.1")
-        .expect("gpt-5.1 exists in bundled models.json");
+        .find(|model| model.slug == "gpt-5.4")
+        .expect("gpt-5.4 exists in bundled models.json");
     model.supports_reasoning_summaries = true;
     model.default_reasoning_summary = ReasoningSummary::Detailed;
 
     let TestCodex { codex, .. } = test_codex()
-        .with_model("gpt-5.1")
+        .with_model("gpt-5.4")
         .with_config(move |config| {
             config.model_reasoning_summary = Some(ReasoningSummary::None);
             config.model_catalog = Some(model_catalog);
@@ -1853,11 +1973,13 @@ async fn reasoning_summary_none_overrides_model_catalog_default() -> anyhow::Res
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1885,15 +2007,17 @@ async fn includes_default_verbosity_in_request() -> anyhow::Result<()> {
         sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
     )
     .await;
-    let TestCodex { codex, .. } = test_codex().with_model("gpt-5.1").build(&server).await?;
+    let TestCodex { codex, .. } = test_codex().with_model("gpt-5.4").build(&server).await?;
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1925,7 +2049,7 @@ async fn configured_verbosity_not_sent_for_models_without_support() -> anyhow::R
     )
     .await;
     let TestCodex { codex, .. } = test_codex()
-        .with_model("gpt-5.1-codex")
+        .with_model("test-no-verbosity")
         .with_config(|config| {
             config.model_verbosity = Some(Verbosity::High);
         })
@@ -1934,11 +2058,13 @@ async fn configured_verbosity_not_sent_for_models_without_support() -> anyhow::R
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1969,7 +2095,7 @@ async fn configured_verbosity_is_sent() -> anyhow::Result<()> {
     )
     .await;
     let TestCodex { codex, .. } = test_codex()
-        .with_model("gpt-5.1")
+        .with_model("gpt-5.4")
         .with_config(|config| {
             config.model_verbosity = Some(Verbosity::High);
         })
@@ -1978,11 +2104,13 @@ async fn configured_verbosity_is_sent() -> anyhow::Result<()> {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -2027,11 +2155,13 @@ async fn includes_developer_instructions_message_in_request() {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -2114,6 +2244,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
+        aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,
@@ -2183,7 +2314,6 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         content: vec![ContentItem::OutputText {
             text: "message".into(),
         }],
-        end_turn: None,
         phase: None,
     });
     prompt.input.push(ResponseItem::WebSearchCall {
@@ -2239,6 +2369,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
             summary.unwrap_or(ReasoningSummary::Auto),
             /*service_tier*/ None,
             /*turn_metadata_header*/ None,
+            &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
         .await
         .expect("responses stream to start");
@@ -2317,11 +2448,13 @@ async fn token_count_includes_rate_limits_snapshot() {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -2352,7 +2485,8 @@ async fn token_count_includes_rate_limits_snapshot() {
                     "resets_at": 1704074400
                 },
                 "credits": null,
-                "plan_type": null
+                "plan_type": null,
+                "rate_limit_reached_type": null
             }
         })
     );
@@ -2386,7 +2520,7 @@ async fn token_count_includes_rate_limits_snapshot() {
                     "reasoning_output_tokens": 0,
                     "total_tokens": 123
                 },
-                // Default model is gpt-5.1-codex-max in tests → 95% usable context window
+                // Default model is gpt-5.4 in tests → 95% usable context window
                 "model_context_window": 258400
             },
             "rate_limits": {
@@ -2403,7 +2537,8 @@ async fn token_count_includes_rate_limits_snapshot() {
                     "resets_at": 1704074400
                 },
                 "credits": null,
-                "plan_type": null
+                "plan_type": null,
+                "rate_limit_reached_type": null
             }
         })
     );
@@ -2477,16 +2612,19 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
             "resets_at": null
         },
         "credits": null,
-        "plan_type": null
+        "plan_type": null,
+        "rate_limit_reached_type": null
     });
 
     let submission_id = codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .expect("submission should succeed while emitting usage limit error events");
@@ -2548,7 +2686,7 @@ async fn context_window_error_sets_total_tokens_to_model_window() -> anyhow::Res
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
-            config.model = Some("gpt-5.1".to_string());
+            config.model = Some("gpt-5.4".to_string());
             config.model_context_window = Some(272_000);
         })
         .build(&server)
@@ -2556,11 +2694,13 @@ async fn context_window_error_sets_total_tokens_to_model_window() -> anyhow::Res
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "seed turn".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
 
@@ -2568,11 +2708,13 @@ async fn context_window_error_sets_total_tokens_to_model_window() -> anyhow::Res
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "trigger context window".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
 
@@ -2650,11 +2792,13 @@ async fn incomplete_response_emits_content_filter_error_message() -> anyhow::Res
         .await?;
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "trigger incomplete".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
 
@@ -2724,6 +2868,7 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
         env_key: Some(EXISTING_ENV_VAR_WITH_NON_EMPTY_VALUE.to_string()),
         experimental_bearer_token: None,
         auth: None,
+        aws: None,
         query_params: Some(std::collections::HashMap::from([(
             "api-version".to_string(),
             "2025-04-01-preview".to_string(),
@@ -2757,11 +2902,13 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -2814,6 +2961,7 @@ async fn env_var_overrides_loaded_auth() {
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
+        aws: None,
         wire_api: WireApi::Responses,
         http_headers: Some(std::collections::HashMap::from([(
             "Custom-Header".to_string(),
@@ -2842,11 +2990,13 @@ async fn env_var_overrides_loaded_auth() {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -2903,11 +3053,13 @@ async fn history_dedupes_streamed_and_final_messages_across_turns() {
     // Turn 1: user sends U1; wait for completion.
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "U1".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -2916,11 +3068,13 @@ async fn history_dedupes_streamed_and_final_messages_across_turns() {
     // Turn 2: user sends U2; wait for completion.
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "U2".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -2929,11 +3083,13 @@ async fn history_dedupes_streamed_and_final_messages_across_turns() {
     // Turn 3: user sends U3; wait for completion.
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "U3".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();

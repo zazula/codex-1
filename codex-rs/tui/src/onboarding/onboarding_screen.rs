@@ -1,14 +1,26 @@
+//! Onboarding screen orchestration and top-level keyboard routing.
+//!
+//! The onboarding flow is a small state machine over visible steps
+//! (welcome/auth/trust). This module decides which step receives key/paste
+//! events and enforces flow-level safety rules that cut across individual step
+//! widgets.
+//!
+//! In particular, onboarding quit handling has a text-entry guard for API-key
+//! input: the printable `q` quit key is treated as text input while the user is
+//! editing a non-empty API-key field, while control/alt chords remain available
+//! as explicit exit shortcuts.
+
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_protocol::ServerNotification;
-use codex_core::config::Config;
-#[cfg(target_os = "windows")]
-use codex_core::windows_sandbox::WindowsSandboxLevelExt;
+use codex_exec_server::LOCAL_FS;
+use codex_git_utils::resolve_root_git_project_for_trust;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
+use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::prelude::Widget;
@@ -20,9 +32,14 @@ use codex_protocol::config_types::ForcedLoginMethod;
 
 use crate::LoginStatus;
 use crate::app_server_session::AppServerSession;
+use crate::key_hint::KeyBindingListExt;
+use crate::legacy_core::config::Config;
+#[cfg(target_os = "windows")]
+use crate::legacy_core::windows_sandbox::WindowsSandboxLevelExt;
 use crate::onboarding::auth::AuthModeWidget;
 use crate::onboarding::auth::SignInOption;
 use crate::onboarding::auth::SignInState;
+use crate::onboarding::keys;
 use crate::onboarding::trust_directory::TrustDirectorySelection;
 use crate::onboarding::trust_directory::TrustDirectoryWidget;
 use crate::onboarding::welcome::WelcomeWidget;
@@ -76,8 +93,16 @@ pub(crate) struct OnboardingResult {
     pub should_exit: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ApiKeyEntryContext {
+    /// True when onboarding is currently rendering the API-key entry state.
+    active: bool,
+    /// True when the API-key input field currently contains user text.
+    has_text: bool,
+}
+
 impl OnboardingScreen {
-    pub(crate) fn new(tui: &mut Tui, args: OnboardingScreenArgs) -> Self {
+    pub(crate) async fn new(tui: &mut Tui, args: OnboardingScreenArgs) -> Self {
         let OnboardingScreenArgs {
             show_trust_screen,
             show_login_screen,
@@ -86,7 +111,7 @@ impl OnboardingScreen {
             config,
         } = args;
         let cwd = config.cwd.to_path_buf();
-        let codex_home = config.codex_home.clone();
+        let codex_home = config.codex_home.to_path_buf();
         let forced_login_method = config.forced_login_method;
         let mut steps: Vec<Step> = Vec::new();
         steps.push(Step::Welcome(WelcomeWidget::new(
@@ -122,8 +147,13 @@ impl OnboardingScreen {
         let show_windows_create_sandbox_hint = false;
         let highlighted = TrustDirectorySelection::Trust;
         if show_trust_screen {
+            let trust_target = resolve_root_git_project_for_trust(LOCAL_FS.as_ref(), &config.cwd)
+                .await
+                .map(Into::into)
+                .unwrap_or_else(|| cwd.clone());
             steps.push(Step::TrustDirectory(TrustDirectoryWidget {
                 cwd,
+                trust_target,
                 codex_home,
                 show_windows_create_sandbox_hint,
                 should_quit: false,
@@ -132,7 +162,6 @@ impl OnboardingScreen {
                 error: None,
             }))
         }
-        // TODO: add git warning.
         Self {
             request_frame: tui.frame_requester(),
             steps,
@@ -242,45 +271,39 @@ impl OnboardingScreen {
         }
     }
 
-    fn is_api_key_entry_active(&self) -> bool {
-        self.steps.iter().any(|step| {
-            if let Step::Auth(widget) = step {
-                return widget
-                    .sign_in_state
-                    .read()
-                    .is_ok_and(|g| matches!(&*g, SignInState::ApiKeyEntry(_)));
-            }
-            false
-        })
+    fn api_key_entry_context(&self) -> ApiKeyEntryContext {
+        self.steps
+            .iter()
+            .find_map(|step| {
+                if let Step::Auth(widget) = step {
+                    Some(ApiKeyEntryContext {
+                        active: widget.is_api_key_entry_active(),
+                        has_text: widget.api_key_entry_has_text(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
     }
 }
 
 impl KeyboardHandler for OnboardingScreen {
+    /// Route key events to onboarding steps while preserving text-entry safety.
+    ///
+    /// In API-key entry mode, printable quit bindings are suppressed only after
+    /// the user has started typing in the API-key field. This keeps the
+    /// printable `q` quit key usable on an empty field while protecting in-progress
+    /// text entry from accidental exits. Control/alt quit chords still work as
+    /// emergency exits.
     fn handle_key_event(&mut self, key_event: KeyEvent) {
         if !matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return;
         }
-        let is_api_key_entry_active = self.is_api_key_entry_active();
-        let should_quit = match key_event {
-            KeyEvent {
-                code: KeyCode::Char('d'),
-                modifiers: crossterm::event::KeyModifiers::CONTROL,
-                kind: KeyEventKind::Press,
-                ..
-            }
-            | KeyEvent {
-                code: KeyCode::Char('c'),
-                modifiers: crossterm::event::KeyModifiers::CONTROL,
-                kind: KeyEventKind::Press,
-                ..
-            } => true,
-            KeyEvent {
-                code: KeyCode::Char('q'),
-                kind: KeyEventKind::Press,
-                ..
-            } => !is_api_key_entry_active,
-            _ => false,
-        };
+        let api_key_entry_context = self.api_key_entry_context();
+        let should_quit = key_event.kind == KeyEventKind::Press
+            && keys::QUIT.is_pressed(key_event)
+            && !suppress_quit_while_typing_api_key(key_event, api_key_entry_context);
         if should_quit {
             if self.is_auth_in_progress() {
                 self.cancel_auth_if_active();
@@ -324,6 +347,24 @@ impl KeyboardHandler for OnboardingScreen {
         }
         self.request_frame.schedule_frame();
     }
+}
+
+/// Returns `true` when a quit shortcut should be ignored as text input.
+///
+/// This only applies while API-key entry is active and the key is a printable
+/// character without control/alt modifiers and there is already text in the
+/// input field. Empty input intentionally does not trigger suppression so
+/// the printable `q` quit key can still exit onboarding.
+fn suppress_quit_while_typing_api_key(
+    key_event: KeyEvent,
+    api_key_entry_context: ApiKeyEntryContext,
+) -> bool {
+    api_key_entry_context.active
+        && api_key_entry_context.has_text
+        && matches!(key_event.code, KeyCode::Char(_))
+        && !key_event
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
 }
 
 impl WidgetRef for &OnboardingScreen {
@@ -452,7 +493,7 @@ pub(crate) async fn run_onboarding_app(
 ) -> Result<OnboardingResult> {
     use tokio_stream::StreamExt;
 
-    let mut onboarding_screen = OnboardingScreen::new(tui, args);
+    let mut onboarding_screen = OnboardingScreen::new(tui, args).await;
     // One-time guard to fully clear the screen after ChatGPT login success message is shown
     let mut did_full_clear_after_success = false;
 
@@ -474,7 +515,7 @@ pub(crate) async fn run_onboarding_app(
                         TuiEvent::Paste(text) => {
                             onboarding_screen.handle_paste(text);
                         }
-                        TuiEvent::Draw => {
+                        TuiEvent::Draw | TuiEvent::Resize => {
                             if !did_full_clear_after_success
                                 && onboarding_screen.steps.iter().any(|step| {
                                     if let Step::Auth(w) = step {
@@ -537,4 +578,61 @@ pub(crate) async fn run_onboarding_app(
         directory_trust_decision: onboarding_screen.directory_trust_decision(),
         should_exit: onboarding_screen.should_exit(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ApiKeyEntryContext;
+    use super::suppress_quit_while_typing_api_key;
+    use crossterm::event::KeyCode;
+    use crossterm::event::KeyEvent;
+    use crossterm::event::KeyModifiers;
+
+    #[test]
+    fn suppresses_printable_quit_key_during_api_key_entry() {
+        let suppressed = suppress_quit_while_typing_api_key(
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+            ApiKeyEntryContext {
+                active: true,
+                has_text: true,
+            },
+        );
+        assert!(suppressed);
+    }
+
+    #[test]
+    fn does_not_suppress_printable_quit_key_when_api_key_input_is_empty() {
+        let suppressed = suppress_quit_while_typing_api_key(
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+            ApiKeyEntryContext {
+                active: true,
+                has_text: false,
+            },
+        );
+        assert!(!suppressed);
+    }
+
+    #[test]
+    fn does_not_suppress_control_quit_key_during_api_key_entry() {
+        let suppressed = suppress_quit_while_typing_api_key(
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            ApiKeyEntryContext {
+                active: true,
+                has_text: true,
+            },
+        );
+        assert!(!suppressed);
+    }
+
+    #[test]
+    fn does_not_suppress_when_not_in_api_key_entry() {
+        let suppressed = suppress_quit_while_typing_api_key(
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            ApiKeyEntryContext {
+                active: false,
+                has_text: true,
+            },
+        );
+        assert!(!suppressed);
+    }
 }

@@ -1,8 +1,10 @@
 use crate::agent::AgentStatus;
-use crate::codex::Session;
-use crate::codex::TurnContext;
 use crate::config::Config;
+use crate::config::DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
+use crate::config::MAX_MULTI_AGENT_V2_WAIT_TIMEOUT_MS;
 use crate::function_tool::FunctionCallError;
+use crate::session::session::Session;
+use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
@@ -26,9 +28,9 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
-pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
+pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
-pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 3600 * 1000;
+pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = MAX_MULTI_AGENT_V2_WAIT_TIMEOUT_MS;
 
 pub(crate) fn function_arguments(payload: ToolPayload) -> Result<String, FunctionCallError> {
     match payload {
@@ -224,14 +226,30 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallE
     let base_config = turn.config.clone();
     let mut config = (*base_config).clone();
     config.model = Some(turn.model_info.slug.clone());
-    config.model_provider = turn.provider.clone();
-    config.model_reasoning_effort = turn.reasoning_effort;
+    config.model_provider = turn.provider.info().clone();
+    config.model_reasoning_effort = turn
+        .reasoning_effort
+        .or(turn.model_info.default_reasoning_level);
     config.model_reasoning_summary = Some(turn.reasoning_summary);
     config.developer_instructions = turn.developer_instructions.clone();
     config.compact_prompt = turn.compact_prompt.clone();
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
 
     Ok(config)
+}
+
+pub(crate) fn reject_full_fork_spawn_overrides(
+    agent_type: Option<&str>,
+    model: Option<&str>,
+    reasoning_effort: Option<ReasoningEffort>,
+    profile: Option<&str>,
+) -> Result<(), FunctionCallError> {
+    if agent_type.is_some() || model.is_some() || reasoning_effort.is_some() || profile.is_some() {
+        return Err(FunctionCallError::RespondToModel(
+            "Full-history forked agents inherit the parent agent type, model, reasoning effort, and profile; omit agent_type, model, reasoning_effort, and profile, or spawn without a full-history fork.".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Copies runtime-only turn state onto a child config before it is handed to `AgentControl`.
@@ -254,31 +272,25 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
     config.cwd = turn.cwd.clone();
     config
         .permissions
-        .sandbox_policy
-        .set(turn.sandbox_policy.get().clone())
+        .set_permission_profile(turn.permission_profile())
         .map_err(|err| {
-            FunctionCallError::RespondToModel(format!("sandbox_policy is invalid: {err}"))
+            FunctionCallError::RespondToModel(format!("permission_profile is invalid: {err}"))
         })?;
-    config.permissions.file_system_sandbox_policy = turn.file_system_sandbox_policy.clone();
-    config.permissions.network_sandbox_policy = turn.network_sandbox_policy;
     Ok(())
 }
 
-pub(crate) fn apply_spawn_agent_profile_override(
+pub(crate) async fn apply_spawn_agent_profile_override(
     config: &mut Config,
-    profile: Option<&str>,
+    profile_name: &str,
 ) -> Result<(), String> {
-    let Some(profile_name) = profile else {
-        return Ok(());
-    };
-
     let merged_toml = config.config_layer_stack.effective_config();
     let Ok(merged_config) =
         crate::config::deserialize_config_toml_with_base(merged_toml, &config.codex_home)
     else {
         return Err("failed to deserialize config for profile override".to_string());
     };
-    let next_config = Config::load_config_with_layer_stack(
+    let next_config = Box::pin(Config::load_config_with_layer_stack(
+        codex_exec_server::LOCAL_FS.as_ref(),
         merged_config,
         crate::config::ConfigOverrides {
             config_profile: Some(profile_name.to_string()),
@@ -287,7 +299,8 @@ pub(crate) fn apply_spawn_agent_profile_override(
         },
         config.codex_home.clone(),
         config.config_layer_stack.clone(),
-    )
+    ))
+    .await
     .map_err(|err| format!("failed to apply spawn_agent profile override: {err}"))?;
     *config = next_config;
     Ok(())

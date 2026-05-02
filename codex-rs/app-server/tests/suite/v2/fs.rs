@@ -27,7 +27,13 @@ use std::os::unix::fs::symlink;
 #[cfg(unix)]
 use std::process::Command;
 
+// macOS and Windows Bazel CI can spend tens of seconds starting app-server
+// subprocesses or processing test RPCs under load.
+#[cfg(any(target_os = "macos", windows))]
+const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(not(any(target_os = "macos", windows)))]
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const OPTIONAL_FS_CHANGE_TIMEOUT: Duration = Duration::from_secs(2);
 
 async fn initialized_mcp(codex_home: &TempDir) -> Result<McpProcess> {
     let mut mcp = McpProcess::new(codex_home.path()).await?;
@@ -89,6 +95,7 @@ async fn fs_get_metadata_returns_only_used_fields() -> Result<()> {
             "createdAtMs".to_string(),
             "isDirectory".to_string(),
             "isFile".to_string(),
+            "isSymlink".to_string(),
             "modifiedAtMs".to_string(),
         ]
     );
@@ -99,6 +106,7 @@ async fn fs_get_metadata_returns_only_used_fields() -> Result<()> {
         FsGetMetadataResponse {
             is_directory: false,
             is_file: true,
+            is_symlink: false,
             created_at_ms: stat.created_at_ms,
             modified_at_ms: stat.modified_at_ms,
         }
@@ -107,6 +115,35 @@ async fn fs_get_metadata_returns_only_used_fields() -> Result<()> {
         stat.modified_at_ms > 0,
         "modifiedAtMs should be populated for existing files"
     );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fs_get_metadata_reports_symlink() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let file_path = codex_home.path().join("note.txt");
+    let symlink_path = codex_home.path().join("note-link.txt");
+    std::fs::write(&file_path, "hello")?;
+    symlink(&file_path, &symlink_path)?;
+
+    let mut mcp = initialized_mcp(&codex_home).await?;
+    let request_id = mcp
+        .send_fs_get_metadata_request(codex_app_server_protocol::FsGetMetadataParams {
+            path: absolute_path(symlink_path),
+        })
+        .await?;
+    let response = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    let stat: FsGetMetadataResponse = to_response(response)?;
+    assert_eq!(stat.is_directory, false);
+    assert_eq!(stat.is_file, true);
+    assert_eq!(stat.is_symlink, true);
 
     Ok(())
 }
@@ -796,7 +833,7 @@ async fn maybe_fs_changed_notification(
     mcp: &mut McpProcess,
 ) -> Result<Option<FsChangedNotification>> {
     match timeout(
-        DEFAULT_READ_TIMEOUT,
+        OPTIONAL_FS_CHANGE_TIMEOUT,
         mcp.read_stream_until_notification_message("fs/changed"),
     )
     .await
@@ -809,6 +846,14 @@ async fn maybe_fs_changed_notification(
 fn replace_file_atomically(path: &PathBuf, contents: &str) -> Result<()> {
     let temp_path = path.with_extension("lock");
     std::fs::write(&temp_path, contents)?;
+
+    #[cfg(windows)]
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+
     std::fs::rename(temp_path, path)?;
     Ok(())
 }

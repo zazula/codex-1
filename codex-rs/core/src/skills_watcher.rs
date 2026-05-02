@@ -16,8 +16,8 @@ use crate::file_watcher::Receiver;
 use crate::file_watcher::ThrottledWatchReceiver;
 use crate::file_watcher::WatchPath;
 use crate::file_watcher::WatchRegistration;
-use crate::plugins::PluginsManager;
 use crate::skills_load_input_from_config;
+use codex_core_plugins::PluginsManager;
 
 #[cfg(not(test))]
 const WATCHER_THROTTLE_INTERVAL: Duration = Duration::from_secs(10);
@@ -54,20 +54,23 @@ impl SkillsWatcher {
         self.tx.subscribe()
     }
 
-    pub(crate) fn register_config(
+    pub(crate) async fn register_config(
         &self,
         config: &Config,
         skills_manager: &SkillsManager,
         plugins_manager: &PluginsManager,
+        fs: Option<Arc<dyn codex_exec_server::ExecutorFileSystem>>,
     ) -> WatchRegistration {
-        let plugin_outcome = plugins_manager.plugins_for_config(config);
+        let plugins_input = config.plugins_config_input();
+        let plugin_outcome = plugins_manager.plugins_for_config(&plugins_input).await;
         let effective_skill_roots = plugin_outcome.effective_skill_roots();
         let skills_input = skills_load_input_from_config(config, effective_skill_roots);
         let roots = skills_manager
-            .skill_roots_for_config(&skills_input)
+            .skill_roots_for_config(&skills_input, fs)
+            .await
             .into_iter()
             .map(|root| WatchPath {
-                path: root.path,
+                path: root.path.into_path_buf(),
                 recursive: true,
             })
             .collect();

@@ -1,8 +1,8 @@
-use codex_protocol::ThreadId;
-use codex_protocol::approvals::ElicitationAction;
-use codex_protocol::mcp::RequestId as McpRequestId;
 #[cfg(test)]
-use codex_protocol::protocol::Op;
+use crate::app_command::AppCommand as Op;
+use codex_app_server_protocol::McpServerElicitationAction;
+use codex_app_server_protocol::RequestId as AppServerRequestId;
+use codex_protocol::ThreadId;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
@@ -24,6 +24,7 @@ use super::scroll_state::ScrollState;
 use super::selection_popup_common::GenericDisplayRow;
 use super::selection_popup_common::measure_rows_height;
 use super::selection_popup_common::render_rows;
+use crate::app::app_server_requests::ResolvedAppServerRequest;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::key_hint;
@@ -49,7 +50,7 @@ pub(crate) enum AppLinkSuggestionType {
 pub(crate) struct AppLinkElicitationTarget {
     pub(crate) thread_id: ThreadId,
     pub(crate) server_name: String,
-    pub(crate) request_id: McpRequestId,
+    pub(crate) request_id: AppServerRequestId,
 }
 
 pub(crate) struct AppLinkViewParams {
@@ -147,7 +148,7 @@ impl AppLinkView {
         self.elicitation_target.is_some()
     }
 
-    fn resolve_elicitation(&self, decision: ElicitationAction) {
+    fn resolve_elicitation(&self, decision: McpServerElicitationAction) {
         let Some(target) = self.elicitation_target.as_ref() else {
             return;
         };
@@ -162,7 +163,7 @@ impl AppLinkView {
     }
 
     fn decline_tool_suggestion(&mut self) {
-        self.resolve_elicitation(ElicitationAction::Decline);
+        self.resolve_elicitation(McpServerElicitationAction::Decline);
         self.complete = true;
     }
 
@@ -181,7 +182,7 @@ impl AppLinkView {
             force_refetch: true,
         });
         if self.is_tool_suggestion() {
-            self.resolve_elicitation(ElicitationAction::Accept);
+            self.resolve_elicitation(McpServerElicitationAction::Accept);
         }
         self.complete = true;
     }
@@ -198,7 +199,7 @@ impl AppLinkView {
             enabled: self.is_enabled,
         });
         if self.is_tool_suggestion() {
-            self.resolve_elicitation(ElicitationAction::Accept);
+            self.resolve_elicitation(McpServerElicitationAction::Accept);
             self.complete = true;
         }
     }
@@ -465,7 +466,7 @@ impl BottomPaneView for AppLinkView {
 
     fn on_ctrl_c(&mut self) -> CancellationEvent {
         if self.is_tool_suggestion() {
-            self.resolve_elicitation(ElicitationAction::Decline);
+            self.resolve_elicitation(McpServerElicitationAction::Decline);
         }
         self.complete = true;
         CancellationEvent::Handled
@@ -473,6 +474,29 @@ impl BottomPaneView for AppLinkView {
 
     fn is_complete(&self) -> bool {
         self.complete
+    }
+
+    fn dismiss_app_server_request(&mut self, request: &ResolvedAppServerRequest) -> bool {
+        let ResolvedAppServerRequest::McpElicitation {
+            server_name,
+            request_id,
+        } = request
+        else {
+            return false;
+        };
+        let Some(target) = self.elicitation_target.as_ref() else {
+            return false;
+        };
+        if target.server_name != *server_name || target.request_id != *request_id {
+            return false;
+        }
+
+        self.complete = true;
+        true
+    }
+
+    fn terminal_title_requires_action(&self) -> bool {
+        self.is_tool_suggestion()
     }
 }
 
@@ -546,9 +570,11 @@ impl crate::render::renderable::Renderable for AppLinkView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::app_server_requests::ResolvedAppServerRequest;
     use crate::app_event::AppEvent;
     use crate::render::renderable::Renderable;
     use insta::assert_snapshot;
+    use pretty_assertions::assert_eq;
     use tokio::sync::mpsc::unbounded_channel;
 
     fn suggestion_target() -> AppLinkElicitationTarget {
@@ -556,7 +582,7 @@ mod tests {
             thread_id: ThreadId::try_from("00000000-0000-0000-0000-000000000001")
                 .expect("valid thread id"),
             server_name: "codex_apps".to_string(),
-            request_id: McpRequestId::String("request-1".to_string()),
+            request_id: AppServerRequestId::String("request-1".to_string()),
         }
     }
 
@@ -606,6 +632,52 @@ mod tests {
             view.action_labels(),
             vec!["Manage on ChatGPT", "Disable app", "Back"]
         );
+    }
+
+    #[test]
+    fn regular_app_link_does_not_require_terminal_title_action() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let view = AppLinkView::new(
+            AppLinkViewParams {
+                app_id: "connector_1".to_string(),
+                title: "Notion".to_string(),
+                description: None,
+                instructions: "Manage app".to_string(),
+                url: "https://example.test/notion".to_string(),
+                is_installed: true,
+                is_enabled: true,
+                suggest_reason: None,
+                suggestion_type: None,
+                elicitation_target: None,
+            },
+            tx,
+        );
+
+        assert!(!view.terminal_title_requires_action());
+    }
+
+    #[test]
+    fn tool_suggestion_requires_terminal_title_action() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let view = AppLinkView::new(
+            AppLinkViewParams {
+                app_id: "connector_google_calendar".to_string(),
+                title: "Google Calendar".to_string(),
+                description: Some("Plan events and schedules.".to_string()),
+                instructions: "Enable this app to use it for the current request.".to_string(),
+                url: "https://example.test/google-calendar".to_string(),
+                is_installed: true,
+                is_enabled: false,
+                suggest_reason: Some("Plan and reference events from your calendar".to_string()),
+                suggestion_type: Some(AppLinkSuggestionType::Enable),
+                elicitation_target: Some(suggestion_target()),
+            },
+            tx,
+        );
+
+        assert!(view.terminal_title_requires_action());
     }
 
     #[test]
@@ -784,8 +856,8 @@ mod tests {
                     op,
                     Op::ResolveElicitation {
                         server_name: "codex_apps".to_string(),
-                        request_id: McpRequestId::String("request-1".to_string()),
-                        decision: ElicitationAction::Accept,
+                        request_id: AppServerRequestId::String("request-1".to_string()),
+                        decision: McpServerElicitationAction::Accept,
                         content: None,
                         meta: None,
                     }
@@ -826,8 +898,8 @@ mod tests {
                     op,
                     Op::ResolveElicitation {
                         server_name: "codex_apps".to_string(),
-                        request_id: McpRequestId::String("request-1".to_string()),
-                        decision: ElicitationAction::Decline,
+                        request_id: AppServerRequestId::String("request-1".to_string()),
+                        decision: McpServerElicitationAction::Decline,
                         content: None,
                         meta: None,
                     }
@@ -876,8 +948,8 @@ mod tests {
                     op,
                     Op::ResolveElicitation {
                         server_name: "codex_apps".to_string(),
-                        request_id: McpRequestId::String("request-1".to_string()),
-                        decision: ElicitationAction::Accept,
+                        request_id: AppServerRequestId::String("request-1".to_string()),
+                        decision: McpServerElicitationAction::Accept,
                         content: None,
                         meta: None,
                     }
@@ -887,6 +959,64 @@ mod tests {
             Err(err) => panic!("missing app event: {err}"),
         }
         assert!(view.is_complete());
+    }
+
+    #[test]
+    fn resolved_tool_suggestion_dismisses_matching_view() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut view = AppLinkView::new(
+            AppLinkViewParams {
+                app_id: "connector_google_calendar".to_string(),
+                title: "Google Calendar".to_string(),
+                description: Some("Plan events and schedules.".to_string()),
+                instructions: "Enable this app to use it for the current request.".to_string(),
+                url: "https://example.test/google-calendar".to_string(),
+                is_installed: true,
+                is_enabled: false,
+                suggest_reason: Some("Plan and reference events from your calendar".to_string()),
+                suggestion_type: Some(AppLinkSuggestionType::Enable),
+                elicitation_target: Some(suggestion_target()),
+            },
+            tx,
+        );
+
+        assert!(
+            view.dismiss_app_server_request(&ResolvedAppServerRequest::McpElicitation {
+                server_name: "codex_apps".to_string(),
+                request_id: AppServerRequestId::String("request-1".to_string()),
+            })
+        );
+        assert!(view.is_complete());
+    }
+
+    #[test]
+    fn resolved_tool_suggestion_ignores_non_matching_request() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut view = AppLinkView::new(
+            AppLinkViewParams {
+                app_id: "connector_google_calendar".to_string(),
+                title: "Google Calendar".to_string(),
+                description: Some("Plan events and schedules.".to_string()),
+                instructions: "Enable this app to use it for the current request.".to_string(),
+                url: "https://example.test/google-calendar".to_string(),
+                is_installed: true,
+                is_enabled: false,
+                suggest_reason: Some("Plan and reference events from your calendar".to_string()),
+                suggestion_type: Some(AppLinkSuggestionType::Enable),
+                elicitation_target: Some(suggestion_target()),
+            },
+            tx,
+        );
+
+        assert!(
+            !view.dismiss_app_server_request(&ResolvedAppServerRequest::McpElicitation {
+                server_name: "other_server".to_string(),
+                request_id: AppServerRequestId::String("request-1".to_string()),
+            })
+        );
+        assert!(!view.is_complete());
     }
 
     #[test]

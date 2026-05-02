@@ -3,7 +3,7 @@ use clap::FromArgMatches;
 use clap::Parser;
 use clap::ValueEnum;
 use codex_utils_cli::CliConfigOverrides;
-use codex_utils_cli::ServiceTierCliArg;
+use codex_utils_cli::SharedCliOptions;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -16,72 +16,34 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// Optional image(s) to attach to the initial prompt.
-    #[arg(
-        long = "image",
-        short = 'i',
-        value_name = "FILE",
-        value_delimiter = ',',
-        num_args = 1..
-    )]
-    pub images: Vec<PathBuf>,
-
-    /// Model the agent should use.
-    #[arg(long, short = 'm', global = true)]
-    pub model: Option<String>,
-
-    /// Use open-source provider.
-    #[arg(long = "oss", default_value_t = false)]
-    pub oss: bool,
-
-    /// Specify which local provider to use (lmstudio or ollama).
-    /// If not specified with --oss, will use config default or show selection.
-    #[arg(long = "local-provider")]
-    pub oss_provider: Option<String>,
-
-    /// Select the sandbox policy to use when executing model-generated shell
-    /// commands.
-    #[arg(long = "sandbox", short = 's', value_enum)]
-    pub sandbox_mode: Option<codex_utils_cli::SandboxModeCliArg>,
-
-    /// Configuration profile from config.toml to specify default options.
-    #[arg(long = "profile", short = 'p')]
-    pub config_profile: Option<String>,
-
-    /// Service tier to request for model responses.
-    #[arg(long = "tier", value_enum, value_name = "TIER", global = true)]
-    pub service_tier: Option<ServiceTierCliArg>,
-
-    /// Convenience alias for low-friction sandboxed automatic execution (--sandbox workspace-write).
-    #[arg(long = "full-auto", default_value_t = false, global = true)]
-    pub full_auto: bool,
-
-    /// Skip all confirmation prompts and execute commands without sandboxing.
-    /// EXTREMELY DANGEROUS. Intended solely for running in environments that are externally sandboxed.
-    #[arg(
-        long = "dangerously-bypass-approvals-and-sandbox",
-        alias = "yolo",
-        default_value_t = false,
-        global = true,
-        conflicts_with = "full_auto"
-    )]
-    pub dangerously_bypass_approvals_and_sandbox: bool,
-
-    /// Tell the agent to use the specified directory as its working root.
-    #[clap(long = "cd", short = 'C', value_name = "DIR")]
-    pub cwd: Option<PathBuf>,
+    #[clap(flatten)]
+    pub shared: ExecSharedCliOptions,
 
     /// Allow running Codex outside a Git repository.
     #[arg(long = "skip-git-repo-check", global = true, default_value_t = false)]
     pub skip_git_repo_check: bool,
 
-    /// Additional directories that should be writable alongside the primary workspace.
-    #[arg(long = "add-dir", value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
-    pub add_dir: Vec<PathBuf>,
-
     /// Run without persisting session files to disk.
     #[arg(long = "ephemeral", global = true, default_value_t = false)]
     pub ephemeral: bool,
+
+    /// Do not load `$CODEX_HOME/config.toml`; auth still uses `CODEX_HOME`.
+    #[arg(long = "ignore-user-config", global = true, default_value_t = false)]
+    pub ignore_user_config: bool,
+
+    /// Do not load user or project execpolicy `.rules` files.
+    #[arg(long = "ignore-rules", global = true, default_value_t = false)]
+    pub ignore_rules: bool,
+
+    /// Legacy compatibility trap for the removed `--full-auto` flag.
+    #[arg(
+        long = "full-auto",
+        hide = true,
+        global = true,
+        default_value_t = false,
+        conflicts_with = "dangerously_bypass_approvals_and_sandbox"
+    )]
+    pub removed_full_auto: bool,
 
     /// Path to a JSON Schema file describing the model's final response shape.
     #[arg(long = "output-schema", value_name = "FILE")]
@@ -129,6 +91,83 @@ pub struct Cli {
     /// a prompt is also provided, stdin is appended as a `<stdin>` block.
     #[arg(value_name = "PROMPT", value_hint = clap::ValueHint::Other)]
     pub prompt: Option<String>,
+}
+
+impl std::ops::Deref for Cli {
+    type Target = SharedCliOptions;
+
+    fn deref(&self) -> &Self::Target {
+        &self.shared.0
+    }
+}
+
+impl std::ops::DerefMut for Cli {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.shared.0
+    }
+}
+
+impl Cli {
+    pub fn removed_full_auto_warning(&self) -> Option<&'static str> {
+        if self.removed_full_auto {
+            return Some(
+                "warning: `--full-auto` is deprecated; use `--sandbox workspace-write` instead.",
+            );
+        }
+
+        None
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ExecSharedCliOptions(SharedCliOptions);
+
+impl ExecSharedCliOptions {
+    pub fn into_inner(self) -> SharedCliOptions {
+        self.0
+    }
+}
+
+impl std::ops::Deref for ExecSharedCliOptions {
+    type Target = SharedCliOptions;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ExecSharedCliOptions {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Args for ExecSharedCliOptions {
+    fn augment_args(cmd: clap::Command) -> clap::Command {
+        mark_exec_global_args(SharedCliOptions::augment_args(cmd))
+    }
+
+    fn augment_args_for_update(cmd: clap::Command) -> clap::Command {
+        mark_exec_global_args(SharedCliOptions::augment_args_for_update(cmd))
+    }
+}
+
+impl FromArgMatches for ExecSharedCliOptions {
+    fn from_arg_matches(matches: &clap::ArgMatches) -> Result<Self, clap::Error> {
+        SharedCliOptions::from_arg_matches(matches).map(Self)
+    }
+
+    fn update_from_arg_matches(&mut self, matches: &clap::ArgMatches) -> Result<(), clap::Error> {
+        self.0.update_from_arg_matches(matches)
+    }
+}
+
+fn mark_exec_global_args(cmd: clap::Command) -> clap::Command {
+    cmd.mut_arg("model", |arg| arg.global(true))
+        .mut_arg("service_tier", |arg| arg.global(true))
+        .mut_arg("dangerously_bypass_approvals_and_sandbox", |arg| {
+            arg.global(true)
+        })
 }
 
 #[derive(Debug, clap::Subcommand)]
