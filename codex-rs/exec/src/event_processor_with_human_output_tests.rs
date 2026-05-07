@@ -2,6 +2,7 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnStatus;
+use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
@@ -19,6 +20,7 @@ use super::paths_match_after_canonicalization;
 use super::reasoning_text;
 use super::should_print_final_message_to_stdout;
 use super::should_print_final_message_to_tty;
+use super::should_show_reasoning_summaries;
 use super::summarize_permission_profile;
 use crate::event_processor::EventProcessor;
 
@@ -82,6 +84,7 @@ fn reasoning_text_prefers_summary_when_raw_reasoning_is_hidden() {
     let text = reasoning_text(
         &["summary".to_string()],
         &["raw".to_string()],
+        /*show_reasoning_summaries*/ true,
         /*show_raw_agent_reasoning*/ false,
     );
 
@@ -89,14 +92,54 @@ fn reasoning_text_prefers_summary_when_raw_reasoning_is_hidden() {
 }
 
 #[test]
+fn reasoning_text_hides_summary_when_summaries_are_disabled() {
+    let text = reasoning_text(
+        &["summary".to_string()],
+        &["raw".to_string()],
+        /*show_reasoning_summaries*/ false,
+        /*show_raw_agent_reasoning*/ false,
+    );
+
+    assert_eq!(text, None);
+}
+
+#[test]
 fn reasoning_text_uses_raw_content_when_enabled() {
     let text = reasoning_text(
         &["summary".to_string()],
         &["raw".to_string()],
+        /*show_reasoning_summaries*/ false,
         /*show_raw_agent_reasoning*/ true,
     );
 
     assert_eq!(text.as_deref(), Some("raw"));
+}
+
+#[test]
+fn reasoning_summaries_are_explicit_opt_in() {
+    assert!(should_show_reasoning_summaries(
+        /*hide_agent_reasoning*/ false,
+        Some(ReasoningSummary::Auto)
+    ));
+    assert!(should_show_reasoning_summaries(
+        /*hide_agent_reasoning*/ false,
+        Some(ReasoningSummary::Concise)
+    ));
+    assert!(should_show_reasoning_summaries(
+        /*hide_agent_reasoning*/ false,
+        Some(ReasoningSummary::Detailed)
+    ));
+    assert!(!should_show_reasoning_summaries(
+        /*hide_agent_reasoning*/ false,
+        Some(ReasoningSummary::None)
+    ));
+    assert!(!should_show_reasoning_summaries(
+        /*hide_agent_reasoning*/ false, None
+    ));
+    assert!(!should_show_reasoning_summaries(
+        /*hide_agent_reasoning*/ true,
+        Some(ReasoningSummary::Auto)
+    ));
 }
 
 #[test]
@@ -226,7 +269,7 @@ fn turn_completed_recovers_final_message_from_turn_items() {
         magenta: Style::new(),
         red: Style::new(),
         yellow: Style::new(),
-        show_agent_reasoning: true,
+        show_reasoning_summaries: true,
         show_raw_agent_reasoning: false,
         last_message_path: None,
         final_message: None,
@@ -273,7 +316,7 @@ fn turn_completed_overwrites_stale_final_message_from_turn_items() {
         magenta: Style::new(),
         red: Style::new(),
         yellow: Style::new(),
-        show_agent_reasoning: true,
+        show_reasoning_summaries: true,
         show_raw_agent_reasoning: false,
         last_message_path: None,
         final_message: Some("stale answer".to_string()),
@@ -321,7 +364,7 @@ fn turn_completed_preserves_streamed_final_message_when_turn_items_are_empty() {
         magenta: Style::new(),
         red: Style::new(),
         yellow: Style::new(),
-        show_agent_reasoning: true,
+        show_reasoning_summaries: true,
         show_raw_agent_reasoning: false,
         last_message_path: None,
         final_message: Some("streamed answer".to_string()),
@@ -364,7 +407,7 @@ fn turn_failed_clears_stale_final_message() {
         magenta: Style::new(),
         red: Style::new(),
         yellow: Style::new(),
-        show_agent_reasoning: true,
+        show_reasoning_summaries: true,
         show_raw_agent_reasoning: false,
         last_message_path: None,
         final_message: Some("partial answer".to_string()),
@@ -408,7 +451,7 @@ fn turn_interrupted_clears_stale_final_message() {
         magenta: Style::new(),
         red: Style::new(),
         yellow: Style::new(),
-        show_agent_reasoning: true,
+        show_reasoning_summaries: true,
         show_raw_agent_reasoning: false,
         last_message_path: None,
         final_message: Some("partial answer".to_string()),

@@ -11,6 +11,7 @@ use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::TurnStatus;
 use codex_core::config::Config;
 use codex_model_provider_info::WireApi;
+use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::num_format::format_with_separators;
 use codex_protocol::permissions::NetworkSandboxPolicy;
@@ -32,7 +33,7 @@ pub(crate) struct EventProcessorWithHumanOutput {
     magenta: Style,
     red: Style,
     yellow: Style,
-    show_agent_reasoning: bool,
+    show_reasoning_summaries: bool,
     show_raw_agent_reasoning: bool,
     last_message_path: Option<PathBuf>,
     final_message: Option<String>,
@@ -57,8 +58,12 @@ impl EventProcessorWithHumanOutput {
             magenta: style(Style::new().magenta(), Style::new()),
             red: style(Style::new().red(), Style::new()),
             yellow: style(Style::new().yellow(), Style::new()),
-            show_agent_reasoning: !config.hide_agent_reasoning,
-            show_raw_agent_reasoning: config.show_raw_agent_reasoning,
+            show_reasoning_summaries: should_show_reasoning_summaries(
+                config.hide_agent_reasoning,
+                config.model_reasoning_summary,
+            ),
+            show_raw_agent_reasoning: !config.hide_agent_reasoning
+                && config.show_raw_agent_reasoning,
             last_message_path,
             final_message: None,
             final_message_rendered: false,
@@ -112,10 +117,12 @@ impl EventProcessorWithHumanOutput {
             ThreadItem::Reasoning {
                 summary, content, ..
             } => {
-                if self.show_agent_reasoning
-                    && let Some(text) =
-                        reasoning_text(&summary, &content, self.show_raw_agent_reasoning)
-                    && !text.trim().is_empty()
+                if let Some(text) = reasoning_text(
+                    &summary,
+                    &content,
+                    self.show_reasoning_summaries,
+                    self.show_raw_agent_reasoning,
+                ) && !text.trim().is_empty()
                 {
                     eprintln!("{}", text.style(self.dimmed));
                 }
@@ -545,17 +552,36 @@ fn display_path_label(path: &Path) -> String {
 fn reasoning_text(
     summary: &[String],
     content: &[String],
+    show_reasoning_summaries: bool,
     show_raw_agent_reasoning: bool,
 ) -> Option<String> {
     let entries = if show_raw_agent_reasoning && !content.is_empty() {
         content
-    } else {
+    } else if show_reasoning_summaries {
         summary
+    } else {
+        &[]
     };
     if entries.is_empty() {
         None
     } else {
         Some(entries.join("\n"))
+    }
+}
+
+fn should_show_reasoning_summaries(
+    hide_agent_reasoning: bool,
+    model_reasoning_summary: Option<ReasoningSummary>,
+) -> bool {
+    if hide_agent_reasoning {
+        return false;
+    }
+
+    match model_reasoning_summary {
+        Some(ReasoningSummary::Auto | ReasoningSummary::Concise | ReasoningSummary::Detailed) => {
+            true
+        }
+        Some(ReasoningSummary::None) | None => false,
     }
 }
 

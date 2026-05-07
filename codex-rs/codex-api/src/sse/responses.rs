@@ -594,6 +594,7 @@ mod tests {
     use bytes::Bytes;
     use codex_client::StreamResponse;
     use codex_protocol::models::MessagePhase;
+    use codex_protocol::models::ReasoningItemContent;
     use codex_protocol::models::ResponseItem;
     use futures::stream;
     use http::HeaderMap;
@@ -727,6 +728,66 @@ mod tests {
             }
             other => panic!("unexpected third event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn parses_minimax_raw_reasoning_before_tool_call() {
+        let events = run_sse(vec![
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "id": "rs_minimax",
+                    "summary": [],
+                    "type": "reasoning",
+                    "content": [{
+                        "text": "Need current weather, so call the weather tool.",
+                        "type": "reasoning_text",
+                    }],
+                    "encrypted_content": null,
+                    "status": "completed",
+                }
+            }),
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "arguments": "{\"location\":\"Paris\"}",
+                    "call_id": "call_weather",
+                    "name": "get_weather",
+                    "type": "function_call",
+                    "id": "fc_minimax",
+                    "namespace": null,
+                    "status": "completed",
+                }
+            }),
+            json!({
+                "type": "response.completed",
+                "response": { "id": "resp1" }
+            }),
+        ])
+        .await;
+
+        assert_eq!(events.len(), 3);
+        assert_matches!(
+            &events[0],
+            ResponseEvent::OutputItemDone(ResponseItem::Reasoning {
+                content: Some(content),
+                encrypted_content: None,
+                ..
+            }) if content.as_slice() == [ReasoningItemContent::ReasoningText {
+                text: "Need current weather, so call the weather tool.".to_string(),
+            }]
+        );
+        assert_matches!(
+            &events[1],
+            ResponseEvent::OutputItemDone(ResponseItem::FunctionCall {
+                name,
+                arguments,
+                call_id,
+                ..
+            }) if name == "get_weather"
+                && arguments == "{\"location\":\"Paris\"}"
+                && call_id == "call_weather"
+        );
     }
 
     #[tokio::test]

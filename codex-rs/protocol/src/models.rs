@@ -761,8 +761,9 @@ pub enum ResponseItem {
         id: String,
         summary: Vec<ReasoningItemReasoningSummary>,
         /// Reasoning text content. Preserved for providers that don't support
-        /// encrypted_content (Z.AI/GLM, Moonshot/Kimi) — they need the raw
-        /// reasoning text returned in subsequent turns for multi-turn coherence.
+        /// encrypted_content (Z.AI/GLM, Moonshot/Kimi, MiniMax M2) — they need
+        /// the raw reasoning text returned in subsequent turns for multi-turn
+        /// coherence.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         content: Option<Vec<ReasoningItemContent>>,
@@ -2394,6 +2395,34 @@ mod tests {
             ResponseItem::Compaction {
                 encrypted_content: "abc".into(),
             }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serializes_raw_reasoning_content_for_provider_passback() -> Result<()> {
+        let item = ResponseItem::Reasoning {
+            id: "rs_minimax".to_string(),
+            summary: Vec::new(),
+            content: Some(vec![ReasoningItemContent::ReasoningText {
+                text: "preserve this reasoning for the next tool round".to_string(),
+            }]),
+            encrypted_content: None,
+        };
+
+        let serialized = serde_json::to_value(item)?;
+
+        assert_eq!(
+            serialized,
+            serde_json::json!({
+                "type": "reasoning",
+                "summary": [],
+                "content": [{
+                    "type": "reasoning_text",
+                    "text": "preserve this reasoning for the next tool round",
+                }],
+                "encrypted_content": null,
+            })
         );
         Ok(())
     }
