@@ -157,8 +157,19 @@ pub async fn run_bridge(config: BridgeConfig) -> Result<()> {
                 // It's a request
                 match serde_json::from_str::<JsonRpcRequest<rmcp::model::ClientRequest>>(&line) {
                     Ok(request) => {
+                        let request_id = request.id.clone();
                         if let Err(e) = server.handle_mcp_request(request).await {
-                            error!("Error handling MCP request: {e}");
+                            error!("Error handling MCP request: {e:#}");
+                            if let Err(send_err) = server
+                                .send_mcp_error(
+                                    request_id,
+                                    ErrorCode::INTERNAL_ERROR,
+                                    format!("{e:#}"),
+                                )
+                                .await
+                            {
+                                error!("Failed to send MCP error response: {send_err:#}");
+                            }
                         }
                     }
                     Err(e) => {
@@ -1656,7 +1667,7 @@ fn make_thread_list_tool() -> Tool {
                 },
                 "sortKey": {
                     "type": "string",
-                    "enum": ["createdAt", "updatedAt"],
+                    "enum": ["createdAt", "updatedAt", "created_at", "updated_at"],
                     "description": "Sort key for ordering results"
                 },
                 "modelProviders": {
@@ -2513,7 +2524,12 @@ fn parse_thread_list_params(args: serde_json::Map<String, serde_json::Value>) ->
         params.insert("limit".to_string(), json!(v as u32));
     }
     if let Some(v) = args.get("sortKey").and_then(|v| v.as_str()) {
-        params.insert("sortKey".to_string(), json!(v));
+        let sort_key = match v {
+            "createdAt" | "created_at" => "created_at",
+            "updatedAt" | "updated_at" => "updated_at",
+            _ => v,
+        };
+        params.insert("sortKey".to_string(), json!(sort_key));
     }
     if let Some(arr) = args.get("modelProviders").and_then(|v| v.as_array()) {
         params.insert(
@@ -2785,4 +2801,40 @@ fn parse_turn_interrupt_params(
         "threadId": thread_id,
         "turnId": turn_id
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+    use serde_json::Map;
+
+    use super::*;
+
+    #[test]
+    fn parse_thread_list_params_translates_camel_case_sort_key() {
+        let mut args = Map::new();
+        args.insert("limit".to_string(), json!(50));
+        args.insert("sortKey".to_string(), json!("updatedAt"));
+
+        assert_eq!(
+            json!({
+                "limit": 50,
+                "sortKey": "updated_at",
+            }),
+            parse_thread_list_params(args)
+        );
+    }
+
+    #[test]
+    fn parse_thread_list_params_preserves_snake_case_sort_key() {
+        let mut args = Map::new();
+        args.insert("sortKey".to_string(), json!("created_at"));
+
+        assert_eq!(
+            json!({
+                "sortKey": "created_at",
+            }),
+            parse_thread_list_params(args)
+        );
+    }
 }
