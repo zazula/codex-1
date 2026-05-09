@@ -17,6 +17,18 @@ struct Cli {
     /// Client name to report to the app-server.
     #[arg(long, default_value = "codex-app-server-bridge")]
     client_name: String,
+
+    /// Bearer token value for websocket Authorization header.
+    ///
+    /// Sends `Authorization: Bearer <token>` during websocket handshake.
+    #[arg(long)]
+    auth_token: Option<String>,
+
+    /// Environment variable name containing bearer token for websocket auth.
+    ///
+    /// If both this and --auth-token are provided, --auth-token takes precedence.
+    #[arg(long)]
+    auth_token_env: Option<String>,
 }
 
 #[tokio::main]
@@ -25,17 +37,27 @@ async fn main() -> Result<()> {
     init_tracing();
 
     let cli = Cli::parse();
+    let auth_bearer_token = resolve_auth_token(&cli);
 
     let config = BridgeConfig {
         app_server_url: cli.url,
         client_name: cli.client_name,
         client_version: env!("CARGO_PKG_VERSION").to_string(),
+        auth_bearer_token,
     };
 
     // Run the bridge
     codex_app_server_bridge::run_bridge(config).await?;
 
     Ok(())
+}
+
+fn resolve_auth_token(cli: &Cli) -> Option<String> {
+    if let Some(token) = cli.auth_token.clone() {
+        return Some(token);
+    }
+    let env_name = cli.auth_token_env.as_deref()?;
+    std::env::var(env_name).ok().filter(|value| !value.is_empty())
 }
 
 fn init_tracing() {

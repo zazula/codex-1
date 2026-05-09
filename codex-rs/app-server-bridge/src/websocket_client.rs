@@ -15,6 +15,7 @@ use codex_app_server_protocol::RequestId;
 use futures::SinkExt;
 use futures::StreamExt;
 use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::debug;
 use tracing::error;
@@ -35,12 +36,26 @@ pub struct WebSocketClient {
 
 impl WebSocketClient {
     /// Connect to a remote app-server via WebSocket.
-    pub async fn connect(url: &str) -> Result<Self> {
+    pub async fn connect(url: &str, auth_bearer_token: Option<&str>) -> Result<Self> {
         let parsed = Url::parse(url).with_context(|| format!("invalid websocket URL `{url}`"))?;
 
-        let (ws_stream, _) = tokio_tungstenite::connect_async(parsed.as_str())
-            .await
-            .with_context(|| format!("failed to connect to websocket app-server at `{url}`"))?;
+        let (ws_stream, _) = if let Some(token) = auth_bearer_token {
+            let mut request = parsed
+                .as_str()
+                .into_client_request()
+                .context("failed to build websocket client request")?;
+            let auth_value = format!("Bearer {token}")
+                .parse()
+                .context("failed to parse Authorization header value")?;
+            request.headers_mut().insert("Authorization", auth_value);
+            tokio_tungstenite::connect_async(request)
+                .await
+                .with_context(|| format!("failed to connect to websocket app-server at `{url}`"))?
+        } else {
+            tokio_tungstenite::connect_async(parsed.as_str())
+                .await
+                .with_context(|| format!("failed to connect to websocket app-server at `{url}`"))?
+        };
 
         info!("Connected to app-server at {url}");
 

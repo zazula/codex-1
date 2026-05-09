@@ -69,6 +69,8 @@ pub struct BridgeConfig {
     pub client_name: String,
     /// Client version to report to the app-server.
     pub client_version: String,
+    /// Optional bearer token for websocket Authorization header.
+    pub auth_bearer_token: Option<String>,
 }
 
 impl Default for BridgeConfig {
@@ -77,6 +79,7 @@ impl Default for BridgeConfig {
             app_server_url: "ws://127.0.0.1:4222".to_string(),
             client_name: "codex-app-server-bridge".to_string(),
             client_version: env!("CARGO_PKG_VERSION").to_string(),
+            auth_bearer_token: None,
         }
     }
 }
@@ -91,7 +94,9 @@ impl Default for BridgeConfig {
 /// 5. Writes MCP responses to stdout
 pub async fn run_bridge(config: BridgeConfig) -> Result<()> {
     // Connect to app-server
-    let mut client = WebSocketClient::connect(&config.app_server_url).await?;
+    let mut client =
+        WebSocketClient::connect(&config.app_server_url, config.auth_bearer_token.as_deref())
+            .await?;
     info!("Connected to app-server at {}", config.app_server_url);
 
     // Perform app-server handshake
