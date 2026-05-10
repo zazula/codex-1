@@ -14,6 +14,12 @@ struct Cli {
     #[arg(long, default_value = "ws://127.0.0.1:4222")]
     url: String,
 
+    /// Environment variable name containing websocket URL for the remote app-server.
+    ///
+    /// If both this and --url are provided, --url takes precedence.
+    #[arg(long)]
+    url_env: Option<String>,
+
     /// Client name to report to the app-server.
     #[arg(long, default_value = "codex-app-server-bridge")]
     client_name: String,
@@ -37,10 +43,11 @@ async fn main() -> Result<()> {
     init_tracing();
 
     let cli = Cli::parse();
+    let app_server_url = resolve_url(&cli);
     let auth_bearer_token = resolve_auth_token(&cli);
 
     let config = BridgeConfig {
-        app_server_url: cli.url,
+        app_server_url,
         client_name: cli.client_name,
         client_version: env!("CARGO_PKG_VERSION").to_string(),
         auth_bearer_token,
@@ -50,6 +57,28 @@ async fn main() -> Result<()> {
     codex_app_server_bridge::run_bridge(config).await?;
 
     Ok(())
+}
+
+fn resolve_url(cli: &Cli) -> String {
+    // clap always provides a value for --url because of default_value.
+    // Treat the default as lower-priority than --url-env, while preserving
+    // explicit --url precedence.
+    let default_url = "ws://127.0.0.1:4222";
+    let cli_url = cli.url.as_str();
+
+    if cli_url != default_url {
+        return cli.url.clone();
+    }
+
+    if let Some(env_name) = cli.url_env.as_deref() {
+        if let Ok(url) = std::env::var(env_name)
+            && !url.is_empty()
+        {
+            return url;
+        }
+    }
+
+    cli.url.clone()
 }
 
 fn resolve_auth_token(cli: &Cli) -> Option<String> {

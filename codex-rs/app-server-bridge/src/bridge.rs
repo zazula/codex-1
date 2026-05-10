@@ -11,6 +11,7 @@
 //! - Review: review_start
 //! - Skills: skills_list
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -53,11 +54,42 @@ use tracing::warn;
 use crate::websocket_client::WebSocketClient;
 
 /// Helper to create a JsonObject from json! macro output.
-fn make_input_schema(value: serde_json::Value) -> Arc<serde_json::Map<String, serde_json::Value>> {
-    match value {
-        serde_json::Value::Object(map) => Arc::new(map),
-        _ => Arc::new(serde_json::Map::new()),
+fn make_routed_input_schema(
+    value: serde_json::Value,
+) -> Arc<serde_json::Map<String, serde_json::Value>> {
+    let mut map = match value {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+
+    let properties = map
+        .entry("properties")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if let serde_json::Value::Object(props) = properties {
+        props.insert(
+            "serverUrl".to_string(),
+            json!({
+                "type": "string",
+                "description": "Optional websocket URL for this request (e.g., ws://host:19101). Overrides default bridge server."
+            }),
+        );
+        props.insert(
+            "serverAuthToken".to_string(),
+            json!({
+                "type": "string",
+                "description": "Optional bearer token value for websocket Authorization header for this request."
+            }),
+        );
+        props.insert(
+            "serverAuthTokenEnv".to_string(),
+            json!({
+                "type": "string",
+                "description": "Optional environment variable name containing bearer token for this request."
+            }),
+        );
     }
+
+    Arc::new(map)
 }
 
 /// Configuration for the app-server bridge.
@@ -93,15 +125,6 @@ impl Default for BridgeConfig {
 /// 4. Forwards MCP tool calls to the app-server
 /// 5. Writes MCP responses to stdout
 pub async fn run_bridge(config: BridgeConfig) -> Result<()> {
-    // Connect to app-server
-    let mut client =
-        WebSocketClient::connect(&config.app_server_url, config.auth_bearer_token.as_deref())
-            .await?;
-    info!("Connected to app-server at {}", config.app_server_url);
-
-    // Perform app-server handshake
-    initialize_app_server(&mut client, &config).await?;
-
     // Set up channels
     let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<String>();
     let (incoming_tx, mut incoming_rx) = mpsc::channel::<String>(super::CHANNEL_CAPACITY);
@@ -141,7 +164,7 @@ pub async fn run_bridge(config: BridgeConfig) -> Result<()> {
 
     // Process incoming MCP messages
     let processor = tokio::spawn(async move {
-        let mut server = McpServer::new(outgoing_tx_clone, client);
+        let mut server = McpServer::new(outgoing_tx_clone, config);
 
         while let Some(line) = incoming_rx.recv().await {
             if line.trim().is_empty() {
@@ -253,19 +276,88 @@ pub struct McpServer {
     /// Channel to send outgoing MCP messages.
     outgoing_tx: mpsc::UnboundedSender<String>,
     /// WebSocket client.
-    client: WebSocketClient,
+    clients: HashMap<String, WebSocketClient>,
+    active_client_key: String,
+    default_server_url: String,
+    default_auth_bearer_token: Option<String>,
     /// Whether MCP handshake is complete.
     mcp_initialized: bool,
 }
 
 impl McpServer {
     /// Create a new MCP server.
-    pub fn new(outgoing_tx: mpsc::UnboundedSender<String>, client: WebSocketClient) -> Self {
+    pub fn new(outgoing_tx: mpsc::UnboundedSender<String>, config: BridgeConfig) -> Self {
+        let default_key = "__default__".to_string();
         Self {
             outgoing_tx,
-            client,
+            clients: HashMap::new(),
+            active_client_key: default_key,
+            default_server_url: config.app_server_url,
+            default_auth_bearer_token: config.auth_bearer_token,
             mcp_initialized: false,
         }
+    }
+
+    fn active_client_mut(&mut self) -> anyhow::Result<&mut WebSocketClient> {
+        self.clients
+            .get_mut(&self.active_client_key)
+            .ok_or_else(|| anyhow::anyhow!("active app-server client missing"))
+    }
+
+    async fn connect_initialized_client(
+        &self,
+        server_url: &str,
+        bearer_token: Option<&str>,
+    ) -> anyhow::Result<WebSocketClient> {
+        let mut client = WebSocketClient::connect(server_url, bearer_token).await?;
+        let init_cfg = BridgeConfig {
+            app_server_url: server_url.to_string(),
+            client_name: "codex-app-server-bridge".to_string(),
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+            auth_bearer_token: bearer_token.map(ToString::to_string),
+        };
+        initialize_app_server(&mut client, &init_cfg).await?;
+        Ok(client)
+    }
+
+    async fn route_request_client(
+        &mut self,
+        args: &mut serde_json::Map<String, serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        let server_url = args
+            .remove("serverUrl")
+            .and_then(|v| v.as_str().map(ToString::to_string));
+        let direct_token = args
+            .remove("serverAuthToken")
+            .and_then(|v| v.as_str().map(ToString::to_string));
+        let token_env = args
+            .remove("serverAuthTokenEnv")
+            .and_then(|v| v.as_str().map(ToString::to_string));
+
+        let (url, bearer, key) = if let Some(url) = server_url {
+            let bearer = match (direct_token, token_env) {
+                (Some(token), _) if !token.is_empty() => Some(token),
+                (_, Some(env_name)) => std::env::var(env_name).ok().filter(|v| !v.is_empty()),
+                _ => None,
+            };
+            let key = format!("{}|{}", url, bearer.as_deref().unwrap_or(""));
+            (url, bearer, key)
+        } else {
+            let url = self.default_server_url.clone();
+            let bearer = self.default_auth_bearer_token.clone();
+            let key = "__default__".to_string();
+            (url, bearer, key)
+        };
+
+        if !self.clients.contains_key(&key) {
+            let client = self
+                .connect_initialized_client(&url, bearer.as_deref())
+                .await
+                .with_context(|| format!("failed to connect routed app-server client: {url}"))?;
+            self.clients.insert(key.clone(), client);
+        }
+        self.active_client_key = key;
+        Ok(())
     }
 
     /// Handle an incoming MCP request.
@@ -425,7 +517,8 @@ impl McpServer {
         params: CallToolRequestParams,
     ) -> anyhow::Result<()> {
         let tool_name = params.name.clone();
-        let arguments = params.arguments.unwrap_or_default();
+        let mut arguments = params.arguments.unwrap_or_default();
+        self.route_request_client(&mut arguments).await?;
 
         info!("Calling tool: {} with args: {:?}", tool_name, arguments);
 
@@ -528,7 +621,7 @@ impl McpServer {
         &mut self,
         params: ThreadStartParams,
     ) -> anyhow::Result<CallToolResult> {
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "thread/start".to_string(),
@@ -537,7 +630,7 @@ impl McpServer {
         };
 
         let response: ThreadStartResponse = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("thread/start request failed")?;
@@ -562,7 +655,7 @@ impl McpServer {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
 
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "thread/read".to_string(),
@@ -574,7 +667,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("thread/read request failed")?;
@@ -589,7 +682,7 @@ impl McpServer {
         &mut self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "thread/list".to_string(),
@@ -598,7 +691,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("thread/list request failed")?;
@@ -613,7 +706,7 @@ impl McpServer {
         &mut self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "thread/resume".to_string(),
@@ -622,7 +715,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("thread/resume request failed")?;
@@ -638,7 +731,7 @@ impl McpServer {
         args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
         let params = parse_thread_fork_params(args);
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "thread/fork".to_string(),
@@ -647,7 +740,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("thread/fork request failed")?;
@@ -663,7 +756,7 @@ impl McpServer {
         args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
         let params = parse_thread_id_params(args);
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "thread/archive".to_string(),
@@ -672,7 +765,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("thread/archive request failed")?;
@@ -688,7 +781,7 @@ impl McpServer {
         args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
         let params = parse_thread_id_params(args);
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "thread/unarchive".to_string(),
@@ -697,7 +790,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("thread/unarchive request failed")?;
@@ -713,7 +806,7 @@ impl McpServer {
         args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
         let params = parse_thread_id_params(args);
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "thread/unsubscribe".to_string(),
@@ -722,7 +815,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("thread/unsubscribe request failed")?;
@@ -738,7 +831,7 @@ impl McpServer {
         args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
         let params = parse_thread_set_name_params(args);
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "thread/setName".to_string(),
@@ -747,7 +840,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("thread/setName request failed")?;
@@ -763,7 +856,7 @@ impl McpServer {
         args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
         let params = parse_thread_id_params(args);
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "thread/compactStart".to_string(),
@@ -772,7 +865,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("thread/compactStart request failed")?;
@@ -788,7 +881,7 @@ impl McpServer {
         args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
         let params = parse_thread_id_params(args);
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "thread/backgroundTerminalsClean".to_string(),
@@ -797,7 +890,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("thread/backgroundTerminalsClean request failed")?;
@@ -813,7 +906,7 @@ impl McpServer {
         args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
         let params = parse_thread_rollback_params(args);
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "thread/rollback".to_string(),
@@ -822,7 +915,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("thread/rollback request failed")?;
@@ -837,7 +930,7 @@ impl McpServer {
         &mut self,
         _args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "thread/loadedList".to_string(),
@@ -846,7 +939,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("thread/loadedList request failed")?;
@@ -898,7 +991,7 @@ impl McpServer {
 
     /// Send turn/start request and stream response.
     async fn send_turn_start(&mut self, params: TurnStartParams) -> anyhow::Result<CallToolResult> {
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id.clone(),
             method: "turn/start".to_string(),
@@ -907,7 +1000,7 @@ impl McpServer {
         };
 
         let response: TurnStartResponse = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("turn/start request failed")?;
@@ -917,7 +1010,7 @@ impl McpServer {
         let mut output = format!("Turn started: {turn_id}\n");
 
         loop {
-            let notification = self.client.recv_notification().await?;
+            let notification = self.active_client_mut()?.recv_notification().await?;
 
             if let Ok(server_notif) = ServerNotification::try_from(notification) {
                 match server_notif {
@@ -952,7 +1045,7 @@ impl McpServer {
         args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
         let params = parse_turn_steer_params(args)?;
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "turn/steer".to_string(),
@@ -961,7 +1054,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("turn/steer request failed")?;
@@ -977,7 +1070,7 @@ impl McpServer {
         args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
         let params = parse_turn_interrupt_params(args)?;
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "turn/interrupt".to_string(),
@@ -986,7 +1079,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("turn/interrupt request failed")?;
@@ -1006,7 +1099,7 @@ impl McpServer {
     ) -> anyhow::Result<CallToolResult> {
         let cwd = args.get("cwd").and_then(|v| v.as_str());
 
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "config/list".to_string(),
@@ -1015,7 +1108,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("config/list request failed")?;
@@ -1032,7 +1125,7 @@ impl McpServer {
         let cwd = args.get("cwd").and_then(|v| v.as_str());
         let layer = args.get("layer").and_then(|v| v.as_str());
 
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "config/read".to_string(),
@@ -1041,7 +1134,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("config/read request failed")?;
@@ -1064,7 +1157,7 @@ impl McpServer {
             .get("config")
             .ok_or_else(|| anyhow::anyhow!("missing config"))?;
 
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "config/write".to_string(),
@@ -1077,7 +1170,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("config/write request failed")?;
@@ -1097,7 +1190,7 @@ impl McpServer {
     ) -> anyhow::Result<CallToolResult> {
         let model_provider = args.get("modelProvider").and_then(|v| v.as_str());
 
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "model/list".to_string(),
@@ -1106,7 +1199,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("model/list request failed")?;
@@ -1133,7 +1226,7 @@ impl McpServer {
             .ok_or_else(|| anyhow::anyhow!("missing target"))?;
         let delivery = args.get("delivery").and_then(|v| v.as_str());
 
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "review/start".to_string(),
@@ -1146,7 +1239,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("review/start request failed")?;
@@ -1178,7 +1271,7 @@ impl McpServer {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
 
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "skills/list".to_string(),
@@ -1190,7 +1283,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("skills/list request failed")?;
@@ -1209,7 +1302,7 @@ impl McpServer {
         &mut self,
         _args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "apps/list".to_string(),
@@ -1218,7 +1311,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("apps/list request failed")?;
@@ -1237,7 +1330,7 @@ impl McpServer {
         &mut self,
         _args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "account/get".to_string(),
@@ -1246,7 +1339,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("account/get request failed")?;
@@ -1261,7 +1354,7 @@ impl McpServer {
         &mut self,
         _args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "account/rateLimits".to_string(),
@@ -1270,7 +1363,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("account/rateLimits request failed")?;
@@ -1289,7 +1382,7 @@ impl McpServer {
         &mut self,
         _args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "experimentalFeature/list".to_string(),
@@ -1298,7 +1391,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("experimentalFeature/list request failed")?;
@@ -1317,7 +1410,7 @@ impl McpServer {
         &mut self,
         _args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "collaborationMode/list".to_string(),
@@ -1326,7 +1419,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("collaborationMode/list request failed")?;
@@ -1345,7 +1438,7 @@ impl McpServer {
         &mut self,
         _args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "mcpServer/status".to_string(),
@@ -1354,7 +1447,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("mcpServer/status request failed")?;
@@ -1373,7 +1466,7 @@ impl McpServer {
         &mut self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "feedback/upload".to_string(),
@@ -1382,7 +1475,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("feedback/upload request failed")?;
@@ -1401,7 +1494,7 @@ impl McpServer {
         &mut self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "skills/remoteRead".to_string(),
@@ -1410,7 +1503,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("skills/remoteRead request failed")?;
@@ -1425,7 +1518,7 @@ impl McpServer {
         &mut self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "skills/remoteWrite".to_string(),
@@ -1434,7 +1527,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("skills/remoteWrite request failed")?;
@@ -1449,7 +1542,7 @@ impl McpServer {
         &mut self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "skills/configWrite".to_string(),
@@ -1458,7 +1551,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("skills/configWrite request failed")?;
@@ -1477,7 +1570,7 @@ impl McpServer {
         &mut self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        let request_id = self.client.next_request_id();
+        let request_id = self.active_client_mut()?.next_request_id();
         let request = JSONRPCRequest {
             id: request_id,
             method: "command/exec".to_string(),
@@ -1486,7 +1579,7 @@ impl McpServer {
         };
 
         let response: serde_json::Value = self
-            .client
+            .active_client_mut()?
             .send_request(&request)
             .await
             .context("command/exec request failed")?;
@@ -1557,7 +1650,7 @@ fn make_thread_start_tool() -> Tool {
     Tool::new(
         "thread_start",
         "Start a new thread/conversation on the remote app-server",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "properties": {
                 "model": {
@@ -1638,7 +1731,7 @@ fn make_thread_read_tool() -> Tool {
     Tool::new(
         "thread_read",
         "Read a thread's details and optionally its turns",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["threadId"],
             "properties": {
@@ -1659,7 +1752,7 @@ fn make_thread_list_tool() -> Tool {
     Tool::new(
         "thread_list",
         "List threads with filtering and pagination",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "properties": {
                 "cursor": {
@@ -1706,7 +1799,7 @@ fn make_thread_resume_tool() -> Tool {
     Tool::new(
         "thread_resume",
         "Resume an existing thread with optional configuration overrides",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["threadId"],
             "properties": {
@@ -1771,7 +1864,7 @@ fn make_turn_start_tool() -> Tool {
     Tool::new(
         "turn_start",
         "Start a new turn in a thread, sending input to the agent",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["threadId", "input"],
             "properties": {
@@ -1884,7 +1977,7 @@ fn make_config_list_tool() -> Tool {
     Tool::new(
         "config_list",
         "List available configuration layers and their sources",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "properties": {
                 "cwd": {
@@ -1900,7 +1993,7 @@ fn make_config_read_tool() -> Tool {
     Tool::new(
         "config_read",
         "Read the merged configuration for a working directory",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "properties": {
                 "cwd": {
@@ -1920,7 +2013,7 @@ fn make_config_write_tool() -> Tool {
     Tool::new(
         "config_write",
         "Write configuration to a specific layer",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["layer", "config"],
             "properties": {
@@ -1946,7 +2039,7 @@ fn make_model_list_tool() -> Tool {
     Tool::new(
         "model_list",
         "List available models and their capabilities",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "properties": {
                 "modelProvider": {
@@ -1962,7 +2055,7 @@ fn make_review_start_tool() -> Tool {
     Tool::new(
         "review_start",
         "Start a review of code changes",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["threadId", "target"],
             "properties": {
@@ -2014,7 +2107,7 @@ fn make_skills_list_tool() -> Tool {
     Tool::new(
         "skills_list",
         "List available skills for a working directory",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "properties": {
                 "cwds": {
@@ -2035,7 +2128,7 @@ fn make_thread_start_simple_tool() -> Tool {
     Tool::new(
         "thread_start_simple",
         "Simple thread start with just cwd and model (backward compatible)",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "properties": {
                 "cwd": {
@@ -2055,7 +2148,7 @@ fn make_turn_start_simple_tool() -> Tool {
     Tool::new(
         "turn_start_simple",
         "Simple turn start with just thread_id and text message (backward compatible)",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["thread_id", "message"],
             "properties": {
@@ -2076,7 +2169,7 @@ fn make_thread_fork_tool() -> Tool {
     Tool::new(
         "thread_fork",
         "Fork a thread to create a new conversation branch",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["thread_id"],
             "properties": {
@@ -2101,7 +2194,7 @@ fn make_thread_archive_tool() -> Tool {
     Tool::new(
         "thread_archive",
         "Archive a thread",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["thread_id"],
             "properties": {
@@ -2118,7 +2211,7 @@ fn make_thread_unarchive_tool() -> Tool {
     Tool::new(
         "thread_unarchive",
         "Unarchive a thread",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["thread_id"],
             "properties": {
@@ -2135,7 +2228,7 @@ fn make_thread_unsubscribe_tool() -> Tool {
     Tool::new(
         "thread_unsubscribe",
         "Unsubscribe from a thread",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["thread_id"],
             "properties": {
@@ -2152,7 +2245,7 @@ fn make_thread_set_name_tool() -> Tool {
     Tool::new(
         "thread_set_name",
         "Set the name of a thread",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["thread_id", "name"],
             "properties": {
@@ -2173,7 +2266,7 @@ fn make_thread_compact_start_tool() -> Tool {
     Tool::new(
         "thread_compact_start",
         "Start compacting a thread to reduce context size",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["thread_id"],
             "properties": {
@@ -2190,7 +2283,7 @@ fn make_thread_background_terminals_clean_tool() -> Tool {
     Tool::new(
         "thread_background_terminals_clean",
         "Clean up background terminals for a thread",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["thread_id"],
             "properties": {
@@ -2207,7 +2300,7 @@ fn make_thread_rollback_tool() -> Tool {
     Tool::new(
         "thread_rollback",
         "Rollback a thread to a previous state",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["thread_id", "turn_id"],
             "properties": {
@@ -2228,7 +2321,7 @@ fn make_thread_loaded_list_tool() -> Tool {
     Tool::new(
         "thread_loaded_list",
         "List all currently loaded threads in memory",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "properties": {}
         })),
@@ -2239,7 +2332,7 @@ fn make_turn_steer_tool() -> Tool {
     Tool::new(
         "turn_steer",
         "Steer an ongoing turn with new input",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["thread_id", "turn_id"],
             "properties": {
@@ -2273,7 +2366,7 @@ fn make_turn_interrupt_tool() -> Tool {
     Tool::new(
         "turn_interrupt",
         "Interrupt an ongoing turn",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["thread_id", "turn_id"],
             "properties": {
@@ -2294,7 +2387,7 @@ fn make_skills_remote_read_tool() -> Tool {
     Tool::new(
         "skills_remote_read",
         "Read a remote skill definition",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["url"],
             "properties": {
@@ -2311,7 +2404,7 @@ fn make_skills_remote_write_tool() -> Tool {
     Tool::new(
         "skills_remote_write",
         "Write a skill to a remote location",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["url", "content"],
             "properties": {
@@ -2332,7 +2425,7 @@ fn make_skills_config_write_tool() -> Tool {
     Tool::new(
         "skills_config_write",
         "Write skill configuration",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["skills"],
             "properties": {
@@ -2352,7 +2445,7 @@ fn make_apps_list_tool() -> Tool {
     Tool::new(
         "apps_list",
         "List available apps",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "properties": {}
         })),
@@ -2363,7 +2456,7 @@ fn make_account_get_tool() -> Tool {
     Tool::new(
         "account_get",
         "Get current account information",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "properties": {}
         })),
@@ -2374,7 +2467,7 @@ fn make_account_rate_limits_tool() -> Tool {
     Tool::new(
         "account_rate_limits",
         "Get current account rate limits",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "properties": {}
         })),
@@ -2385,7 +2478,7 @@ fn make_experimental_feature_list_tool() -> Tool {
     Tool::new(
         "experimental_feature_list",
         "List available experimental features",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "properties": {}
         })),
@@ -2396,7 +2489,7 @@ fn make_collaboration_mode_list_tool() -> Tool {
     Tool::new(
         "collaboration_mode_list",
         "List available collaboration modes",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "properties": {}
         })),
@@ -2407,7 +2500,7 @@ fn make_mcp_server_status_tool() -> Tool {
     Tool::new(
         "mcp_server_status",
         "Get MCP server status",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "properties": {}
         })),
@@ -2418,7 +2511,7 @@ fn make_feedback_upload_tool() -> Tool {
     Tool::new(
         "feedback_upload",
         "Upload feedback to the server",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["feedback"],
             "properties": {
@@ -2435,7 +2528,7 @@ fn make_command_exec_tool() -> Tool {
     Tool::new(
         "command_exec",
         "Execute a command through the app-server",
-        make_input_schema(json!({
+        make_routed_input_schema(json!({
             "type": "object",
             "required": ["command"],
             "properties": {
